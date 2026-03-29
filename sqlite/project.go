@@ -43,9 +43,6 @@ func (s *ProjectService) CreateProject(ctx context.Context, create deploykit.Pro
 		project.UpdatedAt.Format(timeFormat),
 	)
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE constraint") {
-			return nil, deploykit.Errorf(deploykit.ECONFLICT, "Project name already exists.")
-		}
 		return nil, fmt.Errorf("creating project: %w", err)
 	}
 
