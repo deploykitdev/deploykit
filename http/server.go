@@ -2,11 +2,14 @@ package http
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/heyjorgedev/deploykit"
 )
 
 // Server represents the HTTP server and holds all handler dependencies.
@@ -18,9 +21,8 @@ type Server struct {
 	// Addr is the bind address for the server.
 	Addr string
 
-	// TODO: Add service dependencies as they are implemented.
-	// ProjectService deploykit.ProjectService
-	// ResourceService deploykit.ResourceService
+	// Service dependencies.
+	ProjectService deploykit.ProjectService
 }
 
 // NewServer creates a new Server instance.
@@ -70,10 +72,48 @@ func (s *Server) Close() error {
 // registerRoutes sets up all HTTP routes.
 func (s *Server) registerRoutes() {
 	s.router.HandleFunc("GET /", s.handleIndex)
+
+	s.router.HandleFunc("POST /projects", s.handleCreateProject)
+	s.router.HandleFunc("GET /projects", s.handleListProjects)
+	s.router.HandleFunc("GET /projects/{id}", s.handleGetProject)
+	s.router.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
+	s.router.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
 }
 
 // handleIndex serves a basic health check response.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	jsonResponse(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// jsonResponse writes a JSON response with the given status code.
+func jsonResponse(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintln(w, `{"status":"ok"}`)
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(v)
+}
+
+// errorResponse writes a JSON error response, mapping domain error codes
+// to appropriate HTTP status codes.
+func (s *Server) errorResponse(w http.ResponseWriter, r *http.Request, err error) {
+	code := deploykit.ErrorCode(err)
+	message := deploykit.ErrorMessage(err)
+
+	status := http.StatusInternalServerError
+	switch code {
+	case deploykit.EINVALID:
+		status = http.StatusBadRequest
+	case deploykit.ENOTFOUND:
+		status = http.StatusNotFound
+	case deploykit.ECONFLICT:
+		status = http.StatusConflict
+	}
+
+	if status >= 500 {
+		s.logger.Error("internal error", "err", err, "method", r.Method, "path", r.URL.Path)
+	}
+
+	jsonResponse(w, status, deploykit.Error{
+		Code:    code,
+		Message: message,
+	})
 }

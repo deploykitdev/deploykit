@@ -63,9 +63,13 @@ func (m *Main) Run(ctx context.Context) error {
 	//     return fmt.Errorf("opening docker client: %w", err)
 	// }
 
+	// Initialize services.
+	projectService := sqlite.NewProjectService(m.DB)
+
 	// Initialize HTTP server.
 	m.HTTPServer = dkhttp.NewServer(m.Logger)
 	m.HTTPServer.Addr = m.Config.Addr
+	m.HTTPServer.ProjectService = projectService
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)
