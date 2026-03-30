@@ -88,11 +88,6 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Password) < 8 {
-		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Password must be at least 8 characters."))
-		return
-	}
-
 	user, err := s.UserService.CreateUser(r.Context(), req)
 	if err != nil {
 		s.errorResponse(w, r, err)

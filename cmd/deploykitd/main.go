@@ -72,6 +72,9 @@ func (m *Main) Run(ctx context.Context) error {
 	projectService := sqlite.NewProjectService(m.DB)
 	userService := sqlite.NewUserService(m.DB)
 	authService := sqlite.NewAuthService(m.DB)
+	serviceService := sqlite.NewServiceService(m.DB)
+	deploymentService := sqlite.NewDeploymentService(m.DB)
+	containerService := sqlite.NewContainerService(m.DB)
 
 	// Initialize HTTP server.
 	m.HTTPServer = dkhttp.NewServer(m.Logger)
@@ -80,6 +83,9 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.ProjectService = projectService
 	m.HTTPServer.UserService = userService
 	m.HTTPServer.AuthService = authService
+	m.HTTPServer.ServiceService = serviceService
+	m.HTTPServer.DeploymentService = deploymentService
+	m.HTTPServer.ContainerService = containerService
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)

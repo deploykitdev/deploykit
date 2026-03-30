@@ -44,10 +44,11 @@ type ProjectCreate struct {
 
 // Validate checks that all required fields are present.
 func (c *ProjectCreate) Validate() error {
+	ve := NewValidationErrors()
 	if c.Name == "" {
-		return Errorf(EINVALID, "Name is required.")
+		ve.Add("name", "Name is required.")
 	}
-	return nil
+	return ve.Err()
 }
 
 // ProjectUpdate holds fields that can be updated on a project.
@@ -58,10 +59,11 @@ type ProjectUpdate struct {
 
 // Validate checks update fields.
 func (u *ProjectUpdate) Validate() error {
+	ve := NewValidationErrors()
 	if u.Name != nil && *u.Name == "" {
-		return Errorf(EINVALID, "Name cannot be empty.")
+		ve.Add("name", "Name cannot be empty.")
 	}
-	return nil
+	return ve.Err()
 }
 
 // ProjectFilter controls filtering and pagination for listing projects.

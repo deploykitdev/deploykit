@@ -169,11 +169,11 @@ func TestUserService_ListUsers(t *testing.T) {
 
 	t.Run("returns all ordered by created_at desc", func(t *testing.T) {
 		svc := NewUserService(MustOpenDB(t))
-		MustCreateUser(t, svc, "first@example.com", "First", "pass1")
+		MustCreateUser(t, svc, "first@example.com", "First", "password1")
 		time.Sleep(time.Second) // ensure different created_at timestamps
-		MustCreateUser(t, svc, "second@example.com", "Second", "pass2")
+		MustCreateUser(t, svc, "second@example.com", "Second", "password2")
 		time.Sleep(time.Second)
-		MustCreateUser(t, svc, "third@example.com", "Third", "pass3")
+		MustCreateUser(t, svc, "third@example.com", "Third", "password3")
 
 		users, count, err := svc.ListUsers(context.Background(), deploykit.UserFilter{})
 		if err != nil {
@@ -196,9 +196,9 @@ func TestUserService_ListUsers(t *testing.T) {
 
 	t.Run("filter by email", func(t *testing.T) {
 		svc := NewUserService(MustOpenDB(t))
-		MustCreateUser(t, svc, "alice@example.com", "Alice", "pass1")
-		MustCreateUser(t, svc, "bob@example.com", "Bob", "pass2")
-		MustCreateUser(t, svc, "alicia@example.com", "Alicia", "pass3")
+		MustCreateUser(t, svc, "alice@example.com", "Alice", "password1")
+		MustCreateUser(t, svc, "bob@example.com", "Bob", "password2")
+		MustCreateUser(t, svc, "alicia@example.com", "Alicia", "password3")
 
 		users, count, err := svc.ListUsers(context.Background(), deploykit.UserFilter{
 			Email: stringPtr("ali"),
@@ -216,9 +216,9 @@ func TestUserService_ListUsers(t *testing.T) {
 
 	t.Run("pagination", func(t *testing.T) {
 		svc := NewUserService(MustOpenDB(t))
-		MustCreateUser(t, svc, "a@example.com", "A", "pass1")
-		MustCreateUser(t, svc, "b@example.com", "B", "pass2")
-		MustCreateUser(t, svc, "c@example.com", "C", "pass3")
+		MustCreateUser(t, svc, "a@example.com", "A", "password1")
+		MustCreateUser(t, svc, "b@example.com", "B", "password2")
+		MustCreateUser(t, svc, "c@example.com", "C", "password3")
 
 		users, count, err := svc.ListUsers(context.Background(), deploykit.UserFilter{
 			Limit: 2, Offset: 0,
@@ -335,8 +335,8 @@ func TestUserService_UpdateUser(t *testing.T) {
 
 	t.Run("duplicate email on update", func(t *testing.T) {
 		svc := NewUserService(MustOpenDB(t))
-		MustCreateUser(t, svc, "alice@example.com", "Alice", "pass1")
-		bob := MustCreateUser(t, svc, "bob@example.com", "Bob", "pass2")
+		MustCreateUser(t, svc, "alice@example.com", "Alice", "password1")
+		bob := MustCreateUser(t, svc, "bob@example.com", "Bob", "password2")
 
 		_, err := svc.UpdateUser(context.Background(), bob.ID, deploykit.UserUpdate{
 			Email: stringPtr("alice@example.com"),

@@ -25,7 +25,7 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := r.PathValue("projectId")
 
 	project, err := s.ProjectService.GetProject(r.Context(), id)
 	if err != nil {
@@ -68,7 +68,7 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := r.PathValue("projectId")
 
 	var req deploykit.ProjectUpdate
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -86,7 +86,7 @@ func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := r.PathValue("projectId")
 
 	if err := s.ProjectService.DeleteProject(r.Context(), id); err != nil {
 		s.errorResponse(w, r, err)

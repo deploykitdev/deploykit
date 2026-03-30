@@ -44,13 +44,14 @@ type LoginRequest struct {
 
 // Validate checks that all required fields are present.
 func (r *LoginRequest) Validate() error {
+	ve := NewValidationErrors()
 	if r.Email == "" {
-		return Errorf(EINVALID, "Email is required.")
+		ve.Add("email", "Email is required.")
 	}
 	if r.Password == "" {
-		return Errorf(EINVALID, "Password is required.")
+		ve.Add("password", "Password is required.")
 	}
-	return nil
+	return ve.Err()
 }
 
 // APIKeyCreate holds fields for creating an API key.
@@ -61,10 +62,11 @@ type APIKeyCreate struct {
 
 // Validate checks that all required fields are present.
 func (c *APIKeyCreate) Validate() error {
+	ve := NewValidationErrors()
 	if c.Description == "" {
-		return Errorf(EINVALID, "Description is required.")
+		ve.Add("description", "Description is required.")
 	}
-	return nil
+	return ve.Err()
 }
 
 // APIKeyCreated is returned once at creation time, including the plaintext token.

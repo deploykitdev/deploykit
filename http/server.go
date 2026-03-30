@@ -28,9 +28,12 @@ type Server struct {
 	loginLimiter *loginRateLimiter
 
 	// Service dependencies.
-	ProjectService deploykit.ProjectService
-	UserService    deploykit.UserService
-	AuthService    deploykit.AuthService
+	ProjectService    deploykit.ProjectService
+	UserService       deploykit.UserService
+	AuthService       deploykit.AuthService
+	ServiceService    deploykit.ServiceService
+	DeploymentService deploykit.DeploymentService
+	ContainerService  deploykit.ContainerService
 }
 
 // NewServer creates a new Server instance.
@@ -82,7 +85,7 @@ func (s *Server) Close() error {
 // registerRoutes sets up all HTTP routes.
 func (s *Server) registerRoutes() {
 	// Public routes (no authentication required).
-	s.router.HandleFunc("GET /", s.handleIndex)
+	s.router.HandleFunc("GET /{$}", s.handleIndex)
 	s.router.HandleFunc("GET /auth/register", s.handleCanRegister)
 	s.router.HandleFunc("POST /auth/register", s.handleRegister)
 	s.router.HandleFunc("POST /auth/login", s.handleLogin)
@@ -95,9 +98,22 @@ func (s *Server) registerRoutes() {
 
 	protected.HandleFunc("POST /projects", s.handleCreateProject)
 	protected.HandleFunc("GET /projects", s.handleListProjects)
-	protected.HandleFunc("GET /projects/{id}", s.handleGetProject)
-	protected.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
-	protected.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
+	protected.HandleFunc("GET /projects/{projectId}", s.handleGetProject)
+	protected.HandleFunc("PATCH /projects/{projectId}", s.handleUpdateProject)
+	protected.HandleFunc("DELETE /projects/{projectId}", s.handleDeleteProject)
+
+	protected.HandleFunc("POST /projects/{projectId}/services", s.handleCreateService)
+	protected.HandleFunc("GET /projects/{projectId}/services", s.handleListServices)
+	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}", s.handleGetService)
+	protected.HandleFunc("PATCH /projects/{projectId}/services/{serviceId}", s.handleUpdateService)
+	protected.HandleFunc("DELETE /projects/{projectId}/services/{serviceId}", s.handleDeleteService)
+
+	protected.HandleFunc("POST /projects/{projectId}/services/{serviceId}/deployments", s.handleCreateDeployment)
+	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/deployments", s.handleListDeployments)
+	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/deployments/{deploymentId}", s.handleGetDeployment)
+	protected.HandleFunc("POST /projects/{projectId}/services/{serviceId}/rollback", s.handleRollbackService)
+
+	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/containers", s.handleListContainers)
 
 	protected.HandleFunc("POST /users", s.handleCreateUser)
 	protected.HandleFunc("GET /users", s.handleListUsers)
@@ -127,6 +143,12 @@ func jsonResponse(w http.ResponseWriter, status int, v any) {
 // errorResponse writes a JSON error response, mapping domain error codes
 // to appropriate HTTP status codes.
 func (s *Server) errorResponse(w http.ResponseWriter, r *http.Request, err error) {
+	// Handle structured validation errors with 422 status.
+	if ve, ok := err.(*deploykit.ValidationError); ok {
+		jsonResponse(w, http.StatusUnprocessableEntity, ve)
+		return
+	}
+
 	code := deploykit.ErrorCode(err)
 	message := deploykit.ErrorMessage(err)
 

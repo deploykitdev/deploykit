@@ -49,16 +49,19 @@ type UserCreate struct {
 
 // Validate checks that all required fields are present.
 func (c *UserCreate) Validate() error {
+	ve := NewValidationErrors()
 	if c.Email == "" {
-		return Errorf(EINVALID, "Email is required.")
+		ve.Add("email", "Email is required.")
 	}
 	if c.Name == "" {
-		return Errorf(EINVALID, "Name is required.")
+		ve.Add("name", "Name is required.")
 	}
 	if c.Password == "" {
-		return Errorf(EINVALID, "Password is required.")
+		ve.Add("password", "Password is required.")
+	} else if len(c.Password) < 8 {
+		ve.Add("password", "Password must be at least 8 characters.")
 	}
-	return nil
+	return ve.Err()
 }
 
 // UserUpdate holds fields that can be updated on a user.
@@ -71,16 +74,19 @@ type UserUpdate struct {
 
 // Validate checks update fields.
 func (u *UserUpdate) Validate() error {
+	ve := NewValidationErrors()
 	if u.Email != nil && *u.Email == "" {
-		return Errorf(EINVALID, "Email cannot be empty.")
+		ve.Add("email", "Email cannot be empty.")
 	}
 	if u.Name != nil && *u.Name == "" {
-		return Errorf(EINVALID, "Name cannot be empty.")
+		ve.Add("name", "Name cannot be empty.")
 	}
 	if u.Password != nil && *u.Password == "" {
-		return Errorf(EINVALID, "Password cannot be empty.")
+		ve.Add("password", "Password cannot be empty.")
+	} else if u.Password != nil && len(*u.Password) < 8 {
+		ve.Add("password", "Password must be at least 8 characters.")
 	}
-	return nil
+	return ve.Err()
 }
 
 // UserFilter controls filtering and pagination for listing users.
