@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/heyjorgedev/deploykit/docker"
 	dkhttp "github.com/heyjorgedev/deploykit/http"
 	"github.com/heyjorgedev/deploykit/sqlite"
 )
@@ -37,11 +38,9 @@ type Main struct {
 	Config Config
 	Logger *slog.Logger
 
-	DB         *sqlite.DB
-	HTTPServer *dkhttp.Server
-
-	// TODO: Add when package is implemented.
-	// DockerClient *docker.Client
+	DB           *sqlite.DB
+	HTTPServer   *dkhttp.Server
+	DockerClient *docker.Client
 }
 
 // NewMain creates a new Main instance with the given config and logger.
@@ -60,11 +59,14 @@ func (m *Main) Run(ctx context.Context) error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 
-	// TODO: Initialize Docker client.
-	// m.DockerClient = docker.NewClient()
-	// if err := m.DockerClient.Open(); err != nil {
-	//     return fmt.Errorf("opening docker client: %w", err)
-	// }
+	// Initialize Docker client.
+	m.DockerClient = docker.NewClient(m.Logger)
+	if err := m.DockerClient.Open(); err != nil {
+		return fmt.Errorf("opening docker client: %w", err)
+	}
+	if err := m.DockerClient.Ping(ctx); err != nil {
+		return fmt.Errorf("connecting to docker daemon: %w", err)
+	}
 
 	// Initialize services.
 	projectService := sqlite.NewProjectService(m.DB)
@@ -112,10 +114,9 @@ func (m *Main) Run(ctx context.Context) error {
 
 // Close tears down all resources in reverse initialization order.
 func (m *Main) Close() error {
-	// TODO: Close Docker client.
-	// if m.DockerClient != nil {
-	//     m.DockerClient.Close()
-	// }
+	if m.DockerClient != nil {
+		m.DockerClient.Close()
+	}
 
 	if m.DB != nil {
 		m.DB.Close()
