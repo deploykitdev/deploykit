@@ -23,6 +23,7 @@ type Server struct {
 
 	// Service dependencies.
 	ProjectService deploykit.ProjectService
+	UserService    deploykit.UserService
 }
 
 // NewServer creates a new Server instance.
@@ -78,6 +79,12 @@ func (s *Server) registerRoutes() {
 	s.router.HandleFunc("GET /projects/{id}", s.handleGetProject)
 	s.router.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
 	s.router.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
+
+	s.router.HandleFunc("POST /users", s.handleCreateUser)
+	s.router.HandleFunc("GET /users", s.handleListUsers)
+	s.router.HandleFunc("GET /users/{id}", s.handleGetUser)
+	s.router.HandleFunc("PATCH /users/{id}", s.handleUpdateUser)
+	s.router.HandleFunc("DELETE /users/{id}", s.handleDeleteUser)
 }
 
 // handleIndex serves a basic health check response.

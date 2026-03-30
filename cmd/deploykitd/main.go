@@ -65,11 +65,13 @@ func (m *Main) Run(ctx context.Context) error {
 
 	// Initialize services.
 	projectService := sqlite.NewProjectService(m.DB)
+	userService := sqlite.NewUserService(m.DB)
 
 	// Initialize HTTP server.
 	m.HTTPServer = dkhttp.NewServer(m.Logger)
 	m.HTTPServer.Addr = m.Config.Addr
 	m.HTTPServer.ProjectService = projectService
+	m.HTTPServer.UserService = userService
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)
