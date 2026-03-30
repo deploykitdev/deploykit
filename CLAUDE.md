@@ -20,7 +20,7 @@ Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`) d
 - **Module:** `github.com/heyjorgedev/deploykit`
 - **Database:** SQLite (embedded, single-file)
 - **Container runtime:** Docker (via Docker SDK for Go)
-- **Frontend (planned):** Nuxt.js SPA
+- **Frontend:** React Router v7 + Vite + TypeScript (SPA embedded into Go binary via `go:embed`)
 
 ## Project Structure
 
@@ -33,8 +33,14 @@ errors.go          - Domain error types and codes (ECONFLICT, EINTERNAL, etc.)
 cmd/
   deploykitd/      - Main binary entry point, config, graceful shutdown
 http/              - HTTP server, routes, handlers, middleware (auth, CORS)
+  spa_prod.go      - Embedded SPA file server (production, go:embed)
+  spa_dev.go       - Dev stub (returns message to use Vite dev server)
+  spa_assets/dist/ - Vite build output (gitignored, embedded into binary)
 sqlite/            - SQLite service implementations, migrations
 docker/            - Docker client, container/network management (planned)
+frontend/          - React Router + Vite + TypeScript SPA
+  app/             - React source (routes, components, lib)
+  vite.config.ts   - Vite config (builds to ../http/spa_assets/dist)
 ```
 
 ## Service Interfaces
@@ -64,9 +70,24 @@ All defined in the root `deploykit` package:
 
 CLI flags with defaults: `-addr` (`:8080`), `-db` (`deploykit.db`), `-log-level` (`info`), `-cors-origin` (`*`)
 
+## API Routing
+
+All backend routes are prefixed with `/api/` (e.g., `/api/auth/login`, `/api/projects`). The root path `/` serves the embedded SPA. This separation allows the SPA catch-all to handle client-side routing without conflicting with API endpoints.
+
+## Frontend
+
+- **Stack:** React Router v7 (SPA mode) + Vite + TypeScript
+- **Source:** `frontend/app/` — routes, components, auth context, API client
+- **Build output:** `http/spa_assets/dist/` — embedded into Go binary via `go:embed`
+- **Dev workflow:** Two terminals — `make dev` (Go backend on :8080) + `make dev-frontend` (Vite on :5173 with API proxy)
+- **Build tags:** `go run -tags dev` skips SPA embedding so the backend can run without building the frontend
+
 ## Commands
 
-- `go build -o dist/deploykitd ./cmd/deploykitd` - Build the server binary (binaries go in `dist/`)
+- `make build` - Build production binary (frontend + Go) to `dist/deploykitd`
+- `make dev` - Run Go backend in dev mode (no embedded SPA)
+- `make dev-frontend` - Run Vite dev server with API proxy to :8080
+- `make frontend` - Build only the frontend
 - `go test ./...` - Run all tests
 - `go vet ./...` - Run static analysis
 - `golangci-lint run` - Run linter (if installed)

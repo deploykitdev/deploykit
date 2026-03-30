@@ -92,14 +92,17 @@ func (s *Server) Close() error {
 
 // registerRoutes sets up all HTTP routes.
 func (s *Server) registerRoutes() {
-	// Public routes (no authentication required).
-	s.router.HandleFunc("GET /{$}", s.handleIndex)
-	s.router.HandleFunc("GET /auth/register", s.handleCanRegister)
-	s.router.HandleFunc("POST /auth/register", s.handleRegister)
-	s.router.HandleFunc("POST /auth/login", s.handleLogin)
-	s.router.HandleFunc("POST /auth/refresh", s.handleRefresh)
+	// API sub-mux: all backend routes live under /api/.
+	api := http.NewServeMux()
 
-	// Protected routes (authentication required).
+	// Public API routes (no authentication required).
+	api.HandleFunc("GET /health", s.handleIndex)
+	api.HandleFunc("GET /auth/register", s.handleCanRegister)
+	api.HandleFunc("POST /auth/register", s.handleRegister)
+	api.HandleFunc("POST /auth/login", s.handleLogin)
+	api.HandleFunc("POST /auth/refresh", s.handleRefresh)
+
+	// Protected API routes (authentication required).
 	protected := http.NewServeMux()
 	protected.HandleFunc("POST /auth/logout", s.handleLogout)
 	protected.HandleFunc("GET /auth/me", s.handleGetCurrentUser)
@@ -133,7 +136,11 @@ func (s *Server) registerRoutes() {
 	protected.HandleFunc("POST /api-keys", s.handleCreateAPIKey)
 	protected.HandleFunc("DELETE /api-keys/{id}", s.handleDeleteAPIKey)
 
-	s.router.Handle("/", s.authenticate(protected))
+	api.Handle("/", s.authenticate(protected))
+
+	// Mount API under /api/ prefix and SPA catch-all at root.
+	s.router.Handle("/api/", http.StripPrefix("/api", api))
+	s.router.Handle("/", s.spaHandler())
 }
 
 // handleIndex serves a basic health check response.

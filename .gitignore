@@ -21,6 +21,13 @@ go.work.sum
 
 # Dependency directories
 /vendor/
+/frontend/node_modules/
+/frontend/build/
+/frontend/.react-router/
+
+# Frontend build output (embedded into Go binary)
+/http/spa_assets/dist/
+!/http/spa_assets/dist/.gitkeep
 
 # IDE & AI tooling
 .idea/
