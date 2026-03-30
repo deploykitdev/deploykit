@@ -2,11 +2,14 @@ package sqlite
 
 import (
 	"context"
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/heyjorgedev/deploykit"
 )
+
+var slugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*[a-z0-9]$`)
 
 // MustCreateProject is a test helper that creates a project or fails the test.
 func MustCreateProject(t *testing.T, s *ProjectService, name string) *deploykit.Project {
@@ -37,6 +40,12 @@ func TestProjectService_CreateProject(t *testing.T) {
 		}
 		if p.UpdatedAt.IsZero() {
 			t.Fatal("expected non-zero UpdatedAt")
+		}
+		if p.Slug == "" {
+			t.Fatal("expected non-empty Slug")
+		}
+		if !slugPattern.MatchString(p.Slug) {
+			t.Fatalf("slug %q does not match expected pattern", p.Slug)
 		}
 	})
 
@@ -71,6 +80,9 @@ func TestProjectService_CreateProject(t *testing.T) {
 		if p1.ID == p2.ID {
 			t.Fatal("expected different IDs for duplicate names")
 		}
+		if p1.Slug == p2.Slug {
+			t.Fatal("expected different slugs for duplicate names")
+		}
 	})
 }
 
@@ -88,6 +100,9 @@ func TestProjectService_GetProject(t *testing.T) {
 		}
 		if got.Name != created.Name {
 			t.Fatalf("got name %q, want %q", got.Name, created.Name)
+		}
+		if got.Slug != created.Slug {
+			t.Fatalf("got slug %q, want %q", got.Slug, created.Slug)
 		}
 	})
 
@@ -287,6 +302,30 @@ func TestProjectService_UpdateProject(t *testing.T) {
 		}
 		if code := deploykit.ErrorCode(err); code != deploykit.EINVALID {
 			t.Fatalf("got error code %q, want %q", code, deploykit.EINVALID)
+		}
+	})
+
+	t.Run("slug immutable on update", func(t *testing.T) {
+		svc := NewProjectService(MustOpenDB(t))
+		original := MustCreateProject(t, svc, "my-app")
+
+		updated, err := svc.UpdateProject(context.Background(), original.ID, deploykit.ProjectUpdate{
+			Name: stringPtr("renamed-app"),
+		})
+		if err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if updated.Slug != original.Slug {
+			t.Fatalf("slug changed from %q to %q after update", original.Slug, updated.Slug)
+		}
+	})
+
+	t.Run("slug format is docker safe", func(t *testing.T) {
+		svc := NewProjectService(MustOpenDB(t))
+		p := MustCreateProject(t, svc, "My App (v2.0)!")
+
+		if !slugPattern.MatchString(p.Slug) {
+			t.Fatalf("slug %q contains invalid characters for Docker", p.Slug)
 		}
 	})
 

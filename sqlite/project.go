@@ -36,14 +36,24 @@ func (s *ProjectService) CreateProject(ctx context.Context, create deploykit.Pro
 		UpdatedAt: time.Now().UTC(),
 	}
 
-	_, err := s.db.db.ExecContext(ctx,
-		`INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
-		project.ID, project.Name,
-		project.CreatedAt.Format(timeFormat),
-		project.UpdatedAt.Format(timeFormat),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("creating project: %w", err)
+	// Retry slug generation on the unlikely event of a collision.
+	const maxAttempts = 3
+	for attempt := range maxAttempts {
+		project.Slug = deploykit.GenerateSlug(create.Name)
+
+		_, err := s.db.db.ExecContext(ctx,
+			`INSERT INTO projects (id, name, slug, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			project.ID, project.Name, project.Slug,
+			project.CreatedAt.Format(timeFormat),
+			project.UpdatedAt.Format(timeFormat),
+		)
+		if err != nil {
+			if strings.Contains(err.Error(), "UNIQUE constraint failed") && attempt < maxAttempts-1 {
+				continue
+			}
+			return nil, fmt.Errorf("creating project: %w", err)
+		}
+		return project, nil
 	}
 
 	return project, nil
@@ -54,8 +64,8 @@ func (s *ProjectService) GetProject(ctx context.Context, id string) (*deploykit.
 	var createdAt, updatedAt string
 
 	err := s.db.db.QueryRowContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM projects WHERE id = ?`, id,
-	).Scan(&project.ID, &project.Name, &createdAt, &updatedAt)
+		`SELECT id, name, slug, created_at, updated_at FROM projects WHERE id = ?`, id,
+	).Scan(&project.ID, &project.Name, &project.Slug, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Project not found.")
 	} else if err != nil {
@@ -89,7 +99,7 @@ func (s *ProjectService) ListProjects(ctx context.Context, filter deploykit.Proj
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, name, created_at, updated_at, COUNT(*) OVER() AS total_count
+		`SELECT id, name, slug, created_at, updated_at, COUNT(*) OVER() AS total_count
 		 FROM projects WHERE %s ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		strings.Join(where, " AND "),
 	)
@@ -107,7 +117,7 @@ func (s *ProjectService) ListProjects(ctx context.Context, filter deploykit.Proj
 	for rows.Next() {
 		p := &deploykit.Project{}
 		var createdAt, updatedAt string
-		if err := rows.Scan(&p.ID, &p.Name, &createdAt, &updatedAt, &totalCount); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Slug, &createdAt, &updatedAt, &totalCount); err != nil {
 			return nil, 0, fmt.Errorf("scanning project row: %w", err)
 		}
 		p.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -135,8 +145,8 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id string, update de
 	project := &deploykit.Project{}
 	var createdAt, updatedAt string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, name, created_at, updated_at FROM projects WHERE id = ?`, id,
-	).Scan(&project.ID, &project.Name, &createdAt, &updatedAt)
+		`SELECT id, name, slug, created_at, updated_at FROM projects WHERE id = ?`, id,
+	).Scan(&project.ID, &project.Name, &project.Slug, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Project not found.")
 	} else if err != nil {
