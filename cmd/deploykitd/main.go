@@ -12,24 +12,27 @@ import (
 
 	"github.com/heyjorgedev/deploykit/docker"
 	dkhttp "github.com/heyjorgedev/deploykit/http"
+	"github.com/heyjorgedev/deploykit/reconciler"
 	"github.com/heyjorgedev/deploykit/sqlite"
 )
 
 // Config represents the application configuration.
 type Config struct {
-	Addr       string
-	DBPath     string
-	LogLevel   string
-	CORSOrigin string
+	Addr              string
+	DBPath            string
+	LogLevel          string
+	CORSOrigin        string
+	ReconcileInterval time.Duration
 }
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Addr:       ":8080",
-		DBPath:     "deploykit.db",
-		LogLevel:   "info",
-		CORSOrigin: "*",
+		Addr:              ":8080",
+		DBPath:            "deploykit.db",
+		LogLevel:          "info",
+		CORSOrigin:        "*",
+		ReconcileInterval: 30 * time.Second,
 	}
 }
 
@@ -76,10 +79,15 @@ func (m *Main) Run(ctx context.Context) error {
 	deploymentService := sqlite.NewDeploymentService(m.DB)
 	containerService := sqlite.NewContainerService(m.DB)
 
+	// Initialize reconciler.
+	rec := reconciler.New(projectService, m.DockerClient, m.Logger, m.Config.ReconcileInterval)
+	go rec.Run(ctx)
+
 	// Initialize HTTP server.
 	m.HTTPServer = dkhttp.NewServer(m.Logger)
 	m.HTTPServer.Addr = m.Config.Addr
 	m.HTTPServer.CORSOrigin = m.Config.CORSOrigin
+	m.HTTPServer.Reconciler = rec
 	m.HTTPServer.ProjectService = projectService
 	m.HTTPServer.UserService = userService
 	m.HTTPServer.AuthService = authService
@@ -138,6 +146,7 @@ func main() {
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.CORSOrigin, "cors-origin", cfg.CORSOrigin, "Allowed CORS origin")
+	flag.DurationVar(&cfg.ReconcileInterval, "reconcile-interval", cfg.ReconcileInterval, "Interval between reconciliation cycles")
 	flag.Parse()
 
 	// Parse log level.

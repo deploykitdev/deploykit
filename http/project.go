@@ -21,6 +21,10 @@ func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.Reconciler != nil {
+		s.Reconciler.Trigger()
+	}
+
 	jsonResponse(w, http.StatusCreated, project)
 }
 
@@ -91,6 +95,10 @@ func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {
 	if err := s.ProjectService.DeleteProject(r.Context(), id); err != nil {
 		s.errorResponse(w, r, err)
 		return
+	}
+
+	if s.Reconciler != nil {
+		s.Reconciler.Trigger()
 	}
 
 	w.WriteHeader(http.StatusNoContent)

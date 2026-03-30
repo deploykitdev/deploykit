@@ -23,6 +23,10 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if s.Reconciler != nil {
+		s.Reconciler.Trigger()
+	}
+
 	jsonResponse(w, http.StatusCreated, deployment)
 }
 

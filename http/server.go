@@ -12,6 +12,11 @@ import (
 	"github.com/heyjorgedev/deploykit"
 )
 
+// Triggerable is implemented by components that support on-demand triggering.
+type Triggerable interface {
+	Trigger()
+}
+
 // Server represents the HTTP server and holds all handler dependencies.
 type Server struct {
 	server *http.Server
@@ -26,6 +31,9 @@ type Server struct {
 
 	// loginLimiter rate-limits login attempts per email.
 	loginLimiter *loginRateLimiter
+
+	// Reconciler triggers infrastructure reconciliation after state changes.
+	Reconciler Triggerable
 
 	// Service dependencies.
 	ProjectService    deploykit.ProjectService
