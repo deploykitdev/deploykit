@@ -2,17 +2,10 @@ import { type FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
+import { AuthLayout } from "@/components/auth-layout";
 import { Button } from "@/components/ui/button";
+import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 
 export default function Register() {
   const { user, loading, login } = useAuth();
@@ -56,88 +49,83 @@ export default function Register() {
 
   if (canRegister === null) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-muted-foreground">Loading...</p>
-      </div>
+      <AuthLayout>
+        <p className="text-center text-muted-foreground">Loading...</p>
+      </AuthLayout>
     );
   }
 
   if (!canRegister) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <Card className="w-full max-w-sm">
-          <CardHeader>
-            <CardTitle className="text-2xl">DeployKit</CardTitle>
-            <CardDescription>
-              Registration is closed. An account already exists.
-            </CardDescription>
-          </CardHeader>
-          <CardFooter>
-            <Button asChild className="w-full">
-              <Link to="/login">Login</Link>
-            </Button>
-          </CardFooter>
-        </Card>
-      </div>
+      <AuthLayout>
+        <div className="flex flex-col items-center gap-6 text-center">
+          <div className="flex flex-col gap-2">
+            <h1 className="text-2xl font-bold">Registration closed</h1>
+            <p className="text-balance text-sm text-muted-foreground">
+              An account already exists. Registration is not available.
+            </p>
+          </div>
+          <Button asChild className="w-full">
+            <Link to="/login">Login</Link>
+          </Button>
+        </div>
+      </AuthLayout>
     );
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center">
-      <Card className="w-full max-w-sm">
-        <CardHeader>
-          <CardTitle className="text-2xl">DeployKit</CardTitle>
-          <CardDescription>Create your account</CardDescription>
-        </CardHeader>
-        <form onSubmit={handleSubmit}>
-          <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="name">Name</Label>
-              <Input
-                id="name"
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                id="email"
-                type="email"
-                placeholder="you@example.com"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                id="password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                required
-              />
-            </div>
-            {error && (
-              <p className="text-sm text-destructive">{error}</p>
-            )}
-          </CardContent>
-          <CardFooter className="flex flex-col gap-3">
-            <Button type="submit" className="w-full">
-              Create Account
-            </Button>
-            <p className="text-sm text-muted-foreground">
-              <Link to="/login" className="underline hover:text-foreground">
-                Already have an account? Login
-              </Link>
-            </p>
-          </CardFooter>
-        </form>
-      </Card>
-    </div>
+    <AuthLayout>
+      <form onSubmit={handleSubmit} className="flex flex-col gap-6">
+        <div className="flex flex-col items-center gap-2 text-center">
+          <h1 className="text-2xl font-bold">Create your account</h1>
+          <p className="text-balance text-sm text-muted-foreground">
+            Enter your details below to get started
+          </p>
+        </div>
+        <div className="grid gap-4">
+          <Field>
+            <FieldLabel htmlFor="name">Name</FieldLabel>
+            <Input
+              id="name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              required
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="email">Email</FieldLabel>
+            <Input
+              id="email"
+              type="email"
+              placeholder="you@example.com"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="password">Password</FieldLabel>
+            <Input
+              id="password"
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+            {error && <FieldError>{error}</FieldError>}
+          </Field>
+          <Button type="submit" className="w-full">
+            Create Account
+          </Button>
+        </div>
+        <div className="text-center text-sm">
+          Already have an account?{" "}
+          <Link to="/login" className="underline underline-offset-4">
+            Login
+          </Link>
+        </div>
+      </form>
+    </AuthLayout>
   );
 }
