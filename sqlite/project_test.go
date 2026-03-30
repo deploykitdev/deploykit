@@ -2,28 +2,11 @@ package sqlite
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/heyjorgedev/deploykit"
 )
-
-// MustOpenDB creates an in-memory SQLite database with migrations applied.
-func MustOpenDB(t *testing.T) *DB {
-	t.Helper()
-	db := NewDB(":memory:", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if err := db.Open(); err != nil {
-		t.Fatal("opening db:", err)
-	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Fatal("closing db:", err)
-		}
-	})
-	return db
-}
 
 // MustCreateProject is a test helper that creates a project or fails the test.
 func MustCreateProject(t *testing.T, s *ProjectService, name string) *deploykit.Project {
@@ -34,8 +17,6 @@ func MustCreateProject(t *testing.T, s *ProjectService, name string) *deploykit.
 	}
 	return p
 }
-
-func stringPtr(s string) *string { return &s }
 
 func TestProjectService_CreateProject(t *testing.T) {
 	t.Run("ok", func(t *testing.T) {
