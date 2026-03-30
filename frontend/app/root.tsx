@@ -1,3 +1,4 @@
+import "./app.css";
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
 import { AuthProvider } from "./lib/auth";
 

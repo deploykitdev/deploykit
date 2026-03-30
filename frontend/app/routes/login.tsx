@@ -1,56 +1,93 @@
-import { type FormEvent, useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { type FormEvent, useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
 import { useAuth } from "../lib/auth";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 export default function Login() {
-  const { login } = useAuth();
+  const { user, loading, login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const redirectTo = searchParams.get("redirect") || "/";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  useEffect(() => {
+    if (!loading && user) {
+      navigate(redirectTo, { replace: true });
+    }
+  }, [user, loading, navigate, redirectTo]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
     try {
       await login(email, password);
-      navigate("/", { replace: true });
+      setSubmitted(true);
     } catch {
       setError("Invalid email or password.");
     }
   }
 
+  if (loading || submitted) return null;
+
   return (
-    <div>
-      <h1>DeployKit</h1>
-      <h2>Login</h2>
-      <form onSubmit={handleSubmit}>
-        <div>
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-        </div>
-        <div>
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-        </div>
-        {error && <p>{error}</p>}
-        <button type="submit">Login</button>
-      </form>
-      <p>
-        <Link to="/register">Create an account</Link>
-      </p>
+    <div className="flex min-h-screen items-center justify-center">
+      <Card className="w-full max-w-sm">
+        <CardHeader>
+          <CardTitle className="text-2xl">DeployKit</CardTitle>
+          <CardDescription>Sign in to your account</CardDescription>
+        </CardHeader>
+        <form onSubmit={handleSubmit}>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <Input
+                id="password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+            </div>
+            {error && (
+              <p className="text-sm text-destructive">{error}</p>
+            )}
+          </CardContent>
+          <CardFooter className="flex flex-col gap-3">
+            <Button type="submit" className="w-full">
+              Login
+            </Button>
+            <p className="text-sm text-muted-foreground">
+              <Link to="/register" className="underline hover:text-foreground">
+                Create an account
+              </Link>
+            </p>
+          </CardFooter>
+        </form>
+      </Card>
     </div>
   );
 }

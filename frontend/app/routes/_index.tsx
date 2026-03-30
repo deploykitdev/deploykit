@@ -2,6 +2,14 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { RequireAuth, useAuth } from "../lib/auth";
 import { api } from "../lib/api";
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 interface Project {
   id: string;
@@ -29,28 +37,49 @@ function DashboardContent() {
   }, []);
 
   return (
-    <div>
-      <header>
-        <h1>DeployKit</h1>
-        <nav>
-          <span>
-            {user?.name} ({user?.email})
-          </span>
-          <button onClick={logout}>Logout</button>
-        </nav>
+    <div className="min-h-screen bg-background">
+      <header className="border-b">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
+          <h1 className="text-xl font-semibold">DeployKit</h1>
+          <nav className="flex items-center gap-4">
+            <span className="text-sm text-muted-foreground">
+              {user?.name} ({user?.email})
+            </span>
+            <Button variant="outline" size="sm" onClick={logout}>
+              Logout
+            </Button>
+          </nav>
+        </div>
       </header>
-      <main>
-        <h2>Projects</h2>
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        <h2 className="mb-4 text-lg font-semibold">Projects</h2>
         {projects.length === 0 ? (
-          <p>No projects yet.</p>
+          <Card>
+            <CardHeader>
+              <CardTitle>No projects yet</CardTitle>
+              <CardDescription>
+                Create your first project to get started.
+              </CardDescription>
+            </CardHeader>
+          </Card>
         ) : (
-          <ul>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {projects.map((p) => (
-              <li key={p.id}>
-                <Link to={`/projects`}>{p.name}</Link>
-              </li>
+              <Link key={p.id} to="/projects">
+                <Card className="transition-colors hover:border-foreground/20">
+                  <CardHeader>
+                    <CardTitle className="text-base">{p.name}</CardTitle>
+                    <CardDescription>{p.slug}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-xs text-muted-foreground">
+                      Created {new Date(p.created_at).toLocaleDateString()}
+                    </p>
+                  </CardContent>
+                </Card>
+              </Link>
             ))}
-          </ul>
+          </div>
         )}
       </main>
     </div>

@@ -5,7 +5,7 @@ import {
   useEffect,
   useState,
 } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 import { api } from "./api";
 
 interface User {
@@ -44,18 +44,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const login = useCallback(async (email: string, password: string) => {
-    const data = await api<{
+    const tokens = await api<{
       access_token: string;
       refresh_token: string;
-      user: User;
     }>("/auth/login", {
       method: "POST",
       body: JSON.stringify({ email, password }),
     });
 
-    localStorage.setItem("access_token", data.access_token);
-    localStorage.setItem("refresh_token", data.refresh_token);
-    setUser(data.user);
+    localStorage.setItem("access_token", tokens.access_token);
+    localStorage.setItem("refresh_token", tokens.refresh_token);
+
+    const me = await api<User>("/auth/me");
+    setUser(me);
   }, []);
 
   const logout = useCallback(async () => {
@@ -84,12 +85,16 @@ export function useAuth() {
 export function RequireAuth({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   useEffect(() => {
     if (!loading && !user) {
-      navigate("/login", { replace: true });
+      const redirect = location.pathname + location.search;
+      navigate(`/login?redirect=${encodeURIComponent(redirect)}`, {
+        replace: true,
+      });
     }
-  }, [user, loading, navigate]);
+  }, [user, loading, navigate, location]);
 
   if (loading) return <p>Loading...</p>;
   if (!user) return null;
