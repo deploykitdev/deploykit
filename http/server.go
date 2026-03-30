@@ -21,22 +21,31 @@ type Server struct {
 	// Addr is the bind address for the server.
 	Addr string
 
+	// CORSOrigin is the allowed origin for CORS requests.
+	CORSOrigin string
+
+	// loginLimiter rate-limits login attempts per email.
+	loginLimiter *loginRateLimiter
+
 	// Service dependencies.
 	ProjectService deploykit.ProjectService
 	UserService    deploykit.UserService
+	AuthService    deploykit.AuthService
 }
 
 // NewServer creates a new Server instance.
 func NewServer(logger *slog.Logger) *Server {
 	s := &Server{
-		logger: logger,
-		router: http.NewServeMux(),
+		logger:       logger,
+		router:       http.NewServeMux(),
+		loginLimiter: newLoginRateLimiter(),
+		CORSOrigin:   "*",
 	}
 
 	s.registerRoutes()
 
 	s.server = &http.Server{
-		Handler: s.router,
+		Handler: s.cors(s.router),
 	}
 
 	return s
@@ -72,19 +81,35 @@ func (s *Server) Close() error {
 
 // registerRoutes sets up all HTTP routes.
 func (s *Server) registerRoutes() {
+	// Public routes (no authentication required).
 	s.router.HandleFunc("GET /", s.handleIndex)
+	s.router.HandleFunc("GET /auth/register", s.handleCanRegister)
+	s.router.HandleFunc("POST /auth/register", s.handleRegister)
+	s.router.HandleFunc("POST /auth/login", s.handleLogin)
+	s.router.HandleFunc("POST /auth/refresh", s.handleRefresh)
 
-	s.router.HandleFunc("POST /projects", s.handleCreateProject)
-	s.router.HandleFunc("GET /projects", s.handleListProjects)
-	s.router.HandleFunc("GET /projects/{id}", s.handleGetProject)
-	s.router.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
-	s.router.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
+	// Protected routes (authentication required).
+	protected := http.NewServeMux()
+	protected.HandleFunc("POST /auth/logout", s.handleLogout)
+	protected.HandleFunc("GET /auth/me", s.handleGetCurrentUser)
 
-	s.router.HandleFunc("POST /users", s.handleCreateUser)
-	s.router.HandleFunc("GET /users", s.handleListUsers)
-	s.router.HandleFunc("GET /users/{id}", s.handleGetUser)
-	s.router.HandleFunc("PATCH /users/{id}", s.handleUpdateUser)
-	s.router.HandleFunc("DELETE /users/{id}", s.handleDeleteUser)
+	protected.HandleFunc("POST /projects", s.handleCreateProject)
+	protected.HandleFunc("GET /projects", s.handleListProjects)
+	protected.HandleFunc("GET /projects/{id}", s.handleGetProject)
+	protected.HandleFunc("PATCH /projects/{id}", s.handleUpdateProject)
+	protected.HandleFunc("DELETE /projects/{id}", s.handleDeleteProject)
+
+	protected.HandleFunc("POST /users", s.handleCreateUser)
+	protected.HandleFunc("GET /users", s.handleListUsers)
+	protected.HandleFunc("GET /users/{id}", s.handleGetUser)
+	protected.HandleFunc("PATCH /users/{id}", s.handleUpdateUser)
+	protected.HandleFunc("DELETE /users/{id}", s.handleDeleteUser)
+
+	protected.HandleFunc("GET /api-keys", s.handleListAPIKeys)
+	protected.HandleFunc("POST /api-keys", s.handleCreateAPIKey)
+	protected.HandleFunc("DELETE /api-keys/{id}", s.handleDeleteAPIKey)
+
+	s.router.Handle("/", s.authenticate(protected))
 }
 
 // handleIndex serves a basic health check response.
@@ -109,6 +134,8 @@ func (s *Server) errorResponse(w http.ResponseWriter, r *http.Request, err error
 	switch code {
 	case deploykit.EINVALID:
 		status = http.StatusBadRequest
+	case deploykit.EUNAUTHORIZED:
+		status = http.StatusUnauthorized
 	case deploykit.ENOTFOUND:
 		status = http.StatusNotFound
 	case deploykit.ECONFLICT:

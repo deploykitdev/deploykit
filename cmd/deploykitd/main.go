@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	dkhttp "github.com/heyjorgedev/deploykit/http"
 	"github.com/heyjorgedev/deploykit/sqlite"
@@ -15,17 +16,19 @@ import (
 
 // Config represents the application configuration.
 type Config struct {
-	Addr     string
-	DBPath   string
-	LogLevel string
+	Addr       string
+	DBPath     string
+	LogLevel   string
+	CORSOrigin string
 }
 
 // DefaultConfig returns the default configuration.
 func DefaultConfig() Config {
 	return Config{
-		Addr:     ":8080",
-		DBPath:   "deploykit.db",
-		LogLevel: "info",
+		Addr:       ":8080",
+		DBPath:     "deploykit.db",
+		LogLevel:   "info",
+		CORSOrigin: "*",
 	}
 }
 
@@ -66,16 +69,35 @@ func (m *Main) Run(ctx context.Context) error {
 	// Initialize services.
 	projectService := sqlite.NewProjectService(m.DB)
 	userService := sqlite.NewUserService(m.DB)
+	authService := sqlite.NewAuthService(m.DB)
 
 	// Initialize HTTP server.
 	m.HTTPServer = dkhttp.NewServer(m.Logger)
 	m.HTTPServer.Addr = m.Config.Addr
+	m.HTTPServer.CORSOrigin = m.Config.CORSOrigin
 	m.HTTPServer.ProjectService = projectService
 	m.HTTPServer.UserService = userService
+	m.HTTPServer.AuthService = authService
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)
 	}
+
+	// Periodically clean expired sessions.
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := authService.CleanExpiredSessions(context.Background()); err != nil {
+					m.Logger.Error("cleaning expired sessions", "err", err)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
 
 	// Wait for context cancellation.
 	<-ctx.Done()
@@ -108,6 +130,7 @@ func main() {
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP listen address")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
+	flag.StringVar(&cfg.CORSOrigin, "cors-origin", cfg.CORSOrigin, "Allowed CORS origin")
 	flag.Parse()
 
 	// Parse log level.
