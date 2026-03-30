@@ -8,7 +8,7 @@ import (
 	"net/http"
 )
 
-//go:embed spa_assets/dist/*
+//go:embed all:spa_assets/dist
 var spaFS embed.FS
 
 func (s *Server) spaHandler() http.Handler {
