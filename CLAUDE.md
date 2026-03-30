@@ -10,7 +10,7 @@ Follows the [WTF Dial](https://github.com/benbjohnson/wtf) pattern by Ben Johnso
 - **`http`** — HTTP server, handlers, and routing. Depends on root domain types.
 - **`sqlite`** — Database layer using SQLite. Implements service interfaces from root.
 - **`docker`** — Docker client and container/network management. Implements provisioning interfaces.
-- **`cmd/deploykit`** — Main entry point. Wires everything together.
+- **`cmd/deploykitd`** — Main entry point. Wires everything together.
 
 Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`) depend on the root package, never on each other.
 
@@ -25,14 +25,44 @@ Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`) d
 ## Project Structure
 
 ```
-deploykit.go       - Core domain types (Project, Resource, Network)
-errors.go          - Domain error types
+deploykit.go       - Package marker
+project.go         - Project domain type and ProjectService interface
+user.go            - User domain type and UserService interface
+auth.go            - Session, APIKey types and AuthService interface
+errors.go          - Domain error types and codes (ECONFLICT, EINTERNAL, etc.)
 cmd/
-  deploykit/       - Main binary entry point
-http/              - HTTP server, routes, handlers
+  deploykitd/      - Main binary entry point, config, graceful shutdown
+http/              - HTTP server, routes, handlers, middleware (auth, CORS)
 sqlite/            - SQLite service implementations, migrations
-docker/            - Docker client, container/network management
+docker/            - Docker client, container/network management (planned)
 ```
+
+## Service Interfaces
+
+All defined in the root `deploykit` package:
+
+- **`ProjectService`** — CRUD + filtered listing for projects
+- **`UserService`** — CRUD + filtered listing for users (bcrypt password hashing)
+- **`AuthService`** — Login, token refresh, logout, API key management, first-user registration gate
+
+## Authentication
+
+- **Session tokens:** Access tokens (15 min TTL) + refresh tokens (7 day TTL) with rotation on refresh
+- **API keys:** Long-lived tokens with optional expiration, tracked `last_used_at`
+- **Security:** Plaintext tokens never stored — SHA-256 hashed in DB; passwords bcrypt-hashed
+- **First-user gate:** `CanRegister()` returns true only when no users exist
+- **Rate limiting:** 5 login attempts per 15 minutes per email
+- **Middleware:** `authenticate()` checks Bearer token (tries session first, then API key)
+
+## Testing
+
+- Table-driven tests in `sqlite/` package
+- Test helpers in `sqlite/sqlite_test.go`: `MustOpenDB(t)`, `MustCreateProject()`, `MustCreateUser()`, `MustCreateAuthUser()`
+- Tests use in-memory SQLite databases (`:memory:`)
+
+## Configuration
+
+CLI flags with defaults: `-addr` (`:8080`), `-db` (`deploykit.db`), `-log-level` (`info`), `-cors-origin` (`*`)
 
 ## Commands
 
