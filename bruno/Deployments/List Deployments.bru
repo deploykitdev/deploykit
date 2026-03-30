@@ -1,0 +1,20 @@
+meta {
+  name: List Deployments
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/projects/{{projectId}}/services/{{serviceId}}/deployments
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~offset: 0
+  ~limit: 20
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

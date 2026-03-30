@@ -1,0 +1,21 @@
+meta {
+  name: List Users
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/users
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~email:
+  ~offset: 0
+  ~limit: 20
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

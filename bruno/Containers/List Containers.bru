@@ -1,0 +1,22 @@
+meta {
+  name: List Containers
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/projects/{{projectId}}/services/{{serviceId}}/containers
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~deployment_id:
+  ~status:
+  ~offset: 0
+  ~limit: 20
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

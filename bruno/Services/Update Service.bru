@@ -1,0 +1,21 @@
+meta {
+  name: Update Service
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/projects/{{projectId}}/services/{{serviceId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "name": "updated-service-name"
+  }
+}

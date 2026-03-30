@@ -1,0 +1,21 @@
+meta {
+  name: Rollback Service
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/projects/{{projectId}}/services/{{serviceId}}/rollback
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "deployment_id": "{{deploymentId}}"
+  }
+}

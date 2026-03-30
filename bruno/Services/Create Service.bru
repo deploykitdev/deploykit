@@ -1,0 +1,27 @@
+meta {
+  name: Create Service
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/projects/{{projectId}}/services
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}
+
+body:json {
+  {
+    "name": "my-service"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setEnvVar("serviceId", res.body.id);
+  }
+}

@@ -1,0 +1,21 @@
+meta {
+  name: List Projects
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/projects
+  body: none
+  auth: bearer
+}
+
+params:query {
+  ~name:
+  ~offset: 0
+  ~limit: 20
+}
+
+auth:bearer {
+  token: {{accessToken}}
+}

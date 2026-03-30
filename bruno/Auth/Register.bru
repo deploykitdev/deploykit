@@ -1,0 +1,26 @@
+meta {
+  name: Register
+  type: http
+  seq: 2
+}
+
+post {
+  url: {{baseUrl}}/auth/register
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "email": "admin@example.com",
+    "name": "Admin",
+    "password": "password123"
+  }
+}
+
+script:post-response {
+  if (res.status === 201) {
+    bru.setEnvVar("accessToken", res.body.tokens.access_token);
+    bru.setEnvVar("refreshToken", res.body.tokens.refresh_token);
+  }
+}
