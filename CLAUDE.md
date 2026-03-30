@@ -66,7 +66,7 @@ CLI flags with defaults: `-addr` (`:8080`), `-db` (`deploykit.db`), `-log-level`
 
 ## Commands
 
-- `go build ./cmd/deploykitd` - Build the server binary
+- `go build -o dist/deploykitd ./cmd/deploykitd` - Build the server binary (binaries go in `dist/`)
 - `go test ./...` - Run all tests
 - `go vet ./...` - Run static analysis
 - `golangci-lint run` - Run linter (if installed)
@@ -81,3 +81,4 @@ CLI flags with defaults: `-addr` (`:8080`), `-db` (`deploykit.db`), `-log-level`
 - API responses: JSON, use consistent envelope format
 - Tests: table-driven tests, use `testing` package
 - Naming: follow Go conventions (camelCase unexported, PascalCase exported)
+- Build output: binaries go in `dist/` (gitignored), never in the project root
