@@ -5,7 +5,7 @@ import { api, ApiError } from "../lib/api";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Field, FieldLabel, FieldError } from "@/components/ui/field";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
@@ -101,7 +101,7 @@ function ProjectsList() {
       ) : (
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {projects.map((p) => (
-            <Link key={p.id} to={`/${p.slug}`} className="group/link">
+            <Link key={p.id} to={`/projects/${p.id}`} className="group/link">
               <Card className="gap-0 rounded-lg p-0 transition-colors duration-200 hover:ring-primary/50">
                 <div className="px-5 pt-4 pb-3">
                   <p className="text-base font-semibold">{p.name}</p>
@@ -180,8 +180,8 @@ function CreateProjectDialog({ onCreated }: { onCreated: () => void }) {
             Give your project a name to get started.
           </DialogDescription>
         </DialogHeader>
-        <div className="space-y-2 py-4">
-          <Label htmlFor="project-name">Name</Label>
+        <Field data-invalid={error ? true : undefined} className="py-4">
+          <FieldLabel htmlFor="project-name">Name</FieldLabel>
           <Input
             id="project-name"
             value={name}
@@ -189,8 +189,8 @@ function CreateProjectDialog({ onCreated }: { onCreated: () => void }) {
             placeholder="My Project"
             autoFocus
           />
-          {error && <p className="text-sm text-destructive">{error}</p>}
-        </div>
+          <FieldError>{error || undefined}</FieldError>
+        </Field>
         <DialogFooter>
           <Button type="submit" disabled={submitting}>
             {submitting ? "Creating..." : "Create Project"}
