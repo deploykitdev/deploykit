@@ -89,6 +89,11 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Send list of connected users (deduplicated).
+	if err := client.sendConnectedUsers(room.connectedUsers()); err != nil {
+		s.logger.Error("sending connected users", "err", err)
+	}
+
 	s.logger.Info("canvas client connected",
 		"user_id", user.ID,
 		"user_name", user.Name,
@@ -177,6 +182,28 @@ func (c *canvasClient) sendCanvasState(nodes []*deploykit.CanvasNode, edges []*d
 	msg, err := json.Marshal(wsMessage{Type: "canvas:state", Payload: payload})
 	if err != nil {
 		return fmt.Errorf("marshaling state message: %w", err)
+	}
+
+	select {
+	case c.send <- msg:
+		return nil
+	default:
+		return fmt.Errorf("send buffer full")
+	}
+}
+
+// sendConnectedUsers sends the deduplicated list of connected users to this client.
+func (c *canvasClient) sendConnectedUsers(users []connectedUser) error {
+	payload, err := json.Marshal(map[string]any{
+		"users": users,
+	})
+	if err != nil {
+		return fmt.Errorf("marshaling connected users: %w", err)
+	}
+
+	msg, err := json.Marshal(wsMessage{Type: "users:list", Payload: payload})
+	if err != nil {
+		return fmt.Errorf("marshaling users list message: %w", err)
 	}
 
 	select {

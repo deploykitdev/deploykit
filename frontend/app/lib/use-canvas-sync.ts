@@ -18,6 +18,11 @@ export interface CursorInfo {
   y: number;
 }
 
+export interface ConnectedUser {
+  user_id: string;
+  user_name: string;
+}
+
 interface CanvasNode {
   id: string;
   project_id: string;
@@ -78,6 +83,7 @@ export function useCanvasSync(projectId: string) {
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [cursors, setCursors] = useState<Map<string, CursorInfo>>(new Map());
+  const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const wsRef = useRef<CanvasWebSocket | null>(null);
   const dragDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const cursorThrottleRef = useRef<number>(0);
@@ -153,12 +159,24 @@ export function useCanvasSync(projectId: string) {
       setCursors((prev) => new Map(prev).set(cursor.user_id, cursor));
     });
 
+    ws.on<{ users: ConnectedUser[] }>("users:list", ({ users }) => {
+      setConnectedUsers(users);
+    });
+
+    ws.on<ConnectedUser>("user:joined", (user) => {
+      setConnectedUsers((prev) => {
+        if (prev.some((u) => u.user_id === user.user_id)) return prev;
+        return [...prev, user];
+      });
+    });
+
     ws.on<{ user_id: string }>("user:left", ({ user_id }) => {
       setCursors((prev) => {
         const next = new Map(prev);
         next.delete(user_id);
         return next;
       });
+      setConnectedUsers((prev) => prev.filter((u) => u.user_id !== user_id));
     });
 
     ws.connect();
@@ -225,6 +243,7 @@ export function useCanvasSync(projectId: string) {
     nodes,
     edges,
     cursors,
+    connectedUsers,
     onNodesChange,
     onEdgesChange,
     onConnect,

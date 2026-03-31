@@ -1,26 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useReactFlow } from "@xyflow/react";
 import type { CursorInfo } from "@/lib/use-canvas-sync";
-
-const CURSOR_COLORS = [
-  "#ef4444", // red
-  "#3b82f6", // blue
-  "#22c55e", // green
-  "#f59e0b", // amber
-  "#8b5cf6", // violet
-  "#ec4899", // pink
-  "#14b8a6", // teal
-  "#f97316", // orange
-];
-
-function getCursorColor(userId: string): string {
-  let hash = 0;
-  for (let i = 0; i < userId.length; i++) {
-    hash = (hash << 5) - hash + userId.charCodeAt(i);
-    hash |= 0;
-  }
-  return CURSOR_COLORS[Math.abs(hash) % CURSOR_COLORS.length];
-}
+import { getUserColor } from "@/lib/user-colors";
 
 interface CursorOverlayProps {
   cursors: Map<string, CursorInfo>;
@@ -48,7 +29,7 @@ function SmoothCursor({ cursor }: { cursor: CursorInfo }) {
   const flowToScreen = useRef(flowToScreenPosition);
   flowToScreen.current = flowToScreenPosition;
 
-  const color = getCursorColor(cursor.user_id);
+  const color = getUserColor(cursor.user_id);
 
   useEffect(() => {
     targetPos.current = { x: cursor.x, y: cursor.y };

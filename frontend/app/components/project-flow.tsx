@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef } from "react";
-import { ReactFlow, Background, Controls, useReactFlow } from "@xyflow/react";
+import { ReactFlow, Background, Controls, Panel, useReactFlow } from "@xyflow/react";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
 import { CursorOverlay } from "./cursor-overlay";
+import { AvatarStack } from "./avatar-stack";
 
 interface ProjectFlowProps {
   projectId: string;
@@ -12,6 +13,7 @@ export function ProjectFlow({ projectId }: ProjectFlowProps) {
     nodes,
     edges,
     cursors,
+    connectedUsers,
     onNodesChange,
     onEdgesChange,
     onConnect,
@@ -31,6 +33,9 @@ export function ProjectFlow({ projectId }: ProjectFlowProps) {
       >
         <Background />
         <Controls />
+        <Panel position="top-right">
+          <AvatarStack users={connectedUsers} />
+        </Panel>
         <CursorTracker onCursorMove={sendCursorMove} />
         <CursorOverlay cursors={cursors} />
       </ReactFlow>

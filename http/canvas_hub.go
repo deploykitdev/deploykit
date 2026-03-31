@@ -73,21 +73,26 @@ type projectRoom struct {
 	clients   map[string]*canvasClient
 }
 
-// addClient registers a client and broadcasts a user:joined message.
+// addClient registers a client and broadcasts a user:joined message if this is
+// the user's first connection to the room (deduplicates multi-tab).
 func (r *projectRoom) addClient(client *canvasClient) {
 	r.mu.Lock()
+	alreadyPresent := r.hasUser(client.userID)
 	r.clients[client.connID] = client
 	r.mu.Unlock()
 
-	payload, _ := json.Marshal(map[string]string{
-		"user_id":   client.userID,
-		"user_name": client.userName,
-	})
-	msg, _ := json.Marshal(wsMessage{Type: "user:joined", Payload: payload})
-	r.broadcast(client.connID, msg)
+	if !alreadyPresent {
+		payload, _ := json.Marshal(map[string]string{
+			"user_id":   client.userID,
+			"user_name": client.userName,
+		})
+		msg, _ := json.Marshal(wsMessage{Type: "user:joined", Payload: payload})
+		r.broadcast(client.connID, msg)
+	}
 }
 
-// removeClient unregisters a client and broadcasts a user:left message.
+// removeClient unregisters a client and broadcasts a user:left message only if
+// this was the user's last connection to the room (deduplicates multi-tab).
 func (r *projectRoom) removeClient(connID string) {
 	r.mu.Lock()
 	client, ok := r.clients[connID]
@@ -95,9 +100,10 @@ func (r *projectRoom) removeClient(connID string) {
 		close(client.send)
 		delete(r.clients, connID)
 	}
+	stillPresent := ok && r.hasUser(client.userID)
 	r.mu.Unlock()
 
-	if ok {
+	if ok && !stillPresent {
 		payload, _ := json.Marshal(map[string]string{
 			"user_id": client.userID,
 		})
@@ -134,6 +140,39 @@ func (r *projectRoom) broadcastAll(msg []byte) {
 		default:
 		}
 	}
+}
+
+// connectedUser is a deduplicated user entry for the users:list payload.
+type connectedUser struct {
+	UserID   string `json:"user_id"`
+	UserName string `json:"user_name"`
+}
+
+// connectedUsers returns a deduplicated list of users in the room.
+func (r *projectRoom) connectedUsers() []connectedUser {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var users []connectedUser
+	for _, c := range r.clients {
+		if !seen[c.userID] {
+			seen[c.userID] = true
+			users = append(users, connectedUser{UserID: c.userID, UserName: c.userName})
+		}
+	}
+	return users
+}
+
+// hasUser returns true if any client in the room belongs to the given user ID.
+// Must be called with r.mu held (read or write).
+func (r *projectRoom) hasUser(userID string) bool {
+	for _, c := range r.clients {
+		if c.userID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 // canvasClient represents a single WebSocket connection.
