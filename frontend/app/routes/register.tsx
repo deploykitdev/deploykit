@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router";
 import { api } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { AuthLayout } from "@/components/auth-layout";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 
@@ -65,9 +65,9 @@ export default function Register() {
               An account already exists. Registration is not available.
             </p>
           </div>
-          <Button asChild className="w-full">
-            <Link to="/login">Login</Link>
-          </Button>
+          <Link to="/login" className={buttonVariants({ className: "w-full" })}>
+            Login
+          </Link>
         </div>
       </AuthLayout>
     );
