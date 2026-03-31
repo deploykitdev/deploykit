@@ -1,8 +1,10 @@
-import { useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { RequireAuth, useAuth } from "../lib/auth";
-import { api } from "../lib/api";
+import { api, ApiError } from "../lib/api";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Table,
   TableBody,
@@ -17,6 +19,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 interface Project {
   id: string;
@@ -36,12 +47,17 @@ export default function Projects() {
 function ProjectsList() {
   const { user, logout } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
-  useEffect(() => {
-    api<{ projects: Project[] }>("/projects").then((data) =>
-      setProjects(data.projects ?? []),
+  const fetchProjects = useCallback(() => {
+    api<{ data: Project[] }>("/projects").then((res) =>
+      setProjects(res.data ?? []),
     );
   }, []);
+
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -63,7 +79,20 @@ function ProjectsList() {
         </div>
       </header>
       <main className="mx-auto max-w-5xl px-6 py-8">
-        <h2 className="mb-4 text-lg font-semibold">Projects</h2>
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Projects</h2>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogTrigger render={<Button size="sm" />}>
+              New Project
+            </DialogTrigger>
+            <CreateProjectDialog
+              onCreated={() => {
+                setDialogOpen(false);
+                fetchProjects();
+              }}
+            />
+          </Dialog>
+        </div>
         {projects.length === 0 ? (
           <Card>
             <CardHeader>
@@ -101,5 +130,72 @@ function ProjectsList() {
         )}
       </main>
     </div>
+  );
+}
+
+function CreateProjectDialog({ onCreated }: { onCreated: () => void }) {
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    setError("");
+    setSubmitting(true);
+
+    try {
+      await api<Project>("/projects", {
+        method: "POST",
+        body: JSON.stringify({ name }),
+      });
+      setName("");
+      onCreated();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        try {
+          const body = JSON.parse(err.message);
+          if (body.errors?.name) {
+            setError(body.errors.name[0]);
+          } else {
+            setError(body.message || "Failed to create project.");
+          }
+        } catch {
+          setError("Failed to create project.");
+        }
+      } else {
+        setError("Failed to create project.");
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <DialogContent>
+      <form onSubmit={handleSubmit}>
+        <DialogHeader>
+          <DialogTitle>New Project</DialogTitle>
+          <DialogDescription>
+            Give your project a name to get started.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="py-4 space-y-2">
+          <Label htmlFor="project-name">Name</Label>
+          <Input
+            id="project-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="My Project"
+            autoFocus
+          />
+          {error && <p className="text-sm text-destructive">{error}</p>}
+        </div>
+        <DialogFooter>
+          <Button type="submit" disabled={submitting}>
+            {submitting ? "Creating..." : "Create Project"}
+          </Button>
+        </DialogFooter>
+      </form>
+    </DialogContent>
   );
 }
