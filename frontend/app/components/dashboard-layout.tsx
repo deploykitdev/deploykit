@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router";
 import { useAuth } from "../lib/auth";
 import { Button } from "@/components/ui/button";
+import { AppLogo } from "./app-logo";
 
 export function DashboardLayout({ children, fluid }: { children: ReactNode; fluid?: boolean }) {
   const { user, logout } = useAuth();
@@ -10,11 +11,9 @@ export function DashboardLayout({ children, fluid }: { children: ReactNode; flui
     <div className={`flex flex-col bg-background dark:bg-card${fluid ? " h-screen" : " min-h-screen"}`}>
       <header>
         <div className="mx-auto flex items-center justify-between px-6 py-4">
-          <h1 className="font-heading text-xl font-semibold tracking-tight">
-            <Link to="/projects" className="hover:text-foreground/80">
-              DeployKit
-            </Link>
-          </h1>
+          <Link to="/projects" className="hover:text-foreground/80">
+            <AppLogo className="h-7 w-auto" />
+          </Link>
           <nav className="flex items-center gap-4">
             <span className="text-sm text-muted-foreground">
               {user?.name} ({user?.email})
