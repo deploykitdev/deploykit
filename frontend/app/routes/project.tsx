@@ -26,7 +26,7 @@ function ProjectDetail() {
 
   return (
     <DashboardLayout fluid>
-      <ProjectFlow />
+      <ProjectFlow projectId={project.id} />
     </DashboardLayout>
   );
 }

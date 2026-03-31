@@ -3,6 +3,7 @@ module github.com/heyjorgedev/deploykit
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/containerd/errdefs v1.0.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/google/uuid v1.6.0

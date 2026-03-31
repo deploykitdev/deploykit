@@ -78,6 +78,7 @@ func (m *Main) Run(ctx context.Context) error {
 	serviceService := sqlite.NewServiceService(m.DB)
 	deploymentService := sqlite.NewDeploymentService(m.DB)
 	containerService := sqlite.NewContainerService(m.DB)
+	canvasService := sqlite.NewCanvasService(m.DB)
 
 	// Initialize reconciler.
 	rec := reconciler.New(projectService, m.DockerClient, m.Logger, m.Config.ReconcileInterval)
@@ -94,6 +95,7 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.ServiceService = serviceService
 	m.HTTPServer.DeploymentService = deploymentService
 	m.HTTPServer.ContainerService = containerService
+	m.HTTPServer.CanvasService = canvasService
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)

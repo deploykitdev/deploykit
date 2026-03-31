@@ -42,6 +42,10 @@ type Server struct {
 	ServiceService    deploykit.ServiceService
 	DeploymentService deploykit.DeploymentService
 	ContainerService  deploykit.ContainerService
+	CanvasService     deploykit.CanvasService
+
+	// canvasHub manages WebSocket connections for canvas collaboration.
+	canvasHub *canvasHub
 }
 
 // NewServer creates a new Server instance.
@@ -50,6 +54,7 @@ func NewServer(logger *slog.Logger) *Server {
 		logger:       logger,
 		router:       http.NewServeMux(),
 		loginLimiter: newLoginRateLimiter(),
+		canvasHub:    newCanvasHub(logger),
 		CORSOrigin:   "*",
 	}
 
@@ -101,6 +106,7 @@ func (s *Server) registerRoutes() {
 	api.HandleFunc("POST /auth/register", s.handleRegister)
 	api.HandleFunc("POST /auth/login", s.handleLogin)
 	api.HandleFunc("POST /auth/refresh", s.handleRefresh)
+	api.HandleFunc("GET /projects/{projectId}/canvas/ws", s.handleCanvasWebSocket)
 
 	// Protected API routes (authentication required).
 	protected := http.NewServeMux()
