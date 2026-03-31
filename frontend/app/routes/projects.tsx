@@ -1,7 +1,8 @@
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import { FormEvent, useState } from "react";
 import { Link } from "react-router";
 import { RequireAuth } from "../lib/auth";
-import { api, ApiError } from "../lib/api";
+import { ApiError } from "../lib/api";
+import { useProjects, useCreateProject, type Project } from "../lib/queries";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -17,13 +18,6 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Plus } from "lucide-react";
-
-interface Project {
-  id: string;
-  name: string;
-  slug: string;
-  created_at: string;
-}
 
 function timeAgo(dateStr: string): string {
   const seconds = Math.floor(
@@ -50,18 +44,8 @@ export default function Projects() {
 }
 
 function ProjectsList() {
-  const [projects, setProjects] = useState<Project[]>([]);
+  const { data: projects = [] } = useProjects();
   const [dialogOpen, setDialogOpen] = useState(false);
-
-  const fetchProjects = useCallback(() => {
-    api<{ data: Project[] }>("/projects").then((res) =>
-      setProjects(res.data ?? []),
-    );
-  }, []);
-
-  useEffect(() => {
-    fetchProjects();
-  }, [fetchProjects]);
 
   return (
     <DashboardLayout>
@@ -75,7 +59,6 @@ function ProjectsList() {
           <CreateProjectDialog
             onCreated={() => {
               setDialogOpen(false);
-              fetchProjects();
             }}
           />
         </Dialog>
@@ -137,18 +120,14 @@ function ProjectsList() {
 function CreateProjectDialog({ onCreated }: { onCreated: () => void }) {
   const [name, setName] = useState("");
   const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
+  const createProject = useCreateProject();
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
-    setSubmitting(true);
 
     try {
-      await api<Project>("/projects", {
-        method: "POST",
-        body: JSON.stringify({ name }),
-      });
+      await createProject.mutateAsync(name);
       setName("");
       onCreated();
     } catch (err) {
@@ -166,8 +145,6 @@ function CreateProjectDialog({ onCreated }: { onCreated: () => void }) {
       } else {
         setError("Failed to create project.");
       }
-    } finally {
-      setSubmitting(false);
     }
   }
 
@@ -192,8 +169,8 @@ function CreateProjectDialog({ onCreated }: { onCreated: () => void }) {
           <FieldError>{error || undefined}</FieldError>
         </Field>
         <DialogFooter>
-          <Button type="submit" disabled={submitting}>
-            {submitting ? "Creating..." : "Create Project"}
+          <Button type="submit" disabled={createProject.isPending}>
+            {createProject.isPending ? "Creating..." : "Create Project"}
           </Button>
         </DialogFooter>
       </form>

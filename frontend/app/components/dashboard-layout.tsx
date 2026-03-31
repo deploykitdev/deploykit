@@ -11,7 +11,7 @@ export function DashboardLayout({ children }: { children: ReactNode }) {
       <header>
         <div className="mx-auto flex items-center justify-between px-6 py-4">
           <h1 className="font-heading text-xl font-semibold tracking-tight">
-            <Link to="/" className="hover:text-foreground/80">
+            <Link to="/projects" className="hover:text-foreground/80">
               DeployKit
             </Link>
           </h1>

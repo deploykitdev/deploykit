@@ -1,5 +1,8 @@
 import "./app.css";
 import { Links, Meta, Outlet, Scripts, ScrollRestoration } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
+import { queryClient } from "./lib/query-client";
 import { AuthProvider } from "./lib/auth";
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -22,8 +25,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
 export default function Root() {
   return (
-    <AuthProvider>
-      <Outlet />
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <Outlet />
+      </AuthProvider>
+      <ReactQueryDevtools initialIsOpen={false} />
+    </QueryClientProvider>
   );
 }
