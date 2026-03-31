@@ -2,6 +2,7 @@ import { useParams } from "react-router";
 import { RequireAuth } from "../lib/auth";
 import { useProject } from "../lib/queries";
 import { DashboardLayout } from "@/components/dashboard-layout";
+import { ProjectFlow } from "@/components/project-flow";
 
 function ProjectDetail() {
   const { id } = useParams();
@@ -24,8 +25,8 @@ function ProjectDetail() {
   }
 
   return (
-    <DashboardLayout>
-      <h1 className="text-2xl font-bold">Project: {project.name}</h1>
+    <DashboardLayout fluid>
+      <ProjectFlow />
     </DashboardLayout>
   );
 }
