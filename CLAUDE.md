@@ -9,10 +9,11 @@ Follows the [WTF Dial](https://github.com/benbjohnson/wtf) pattern by Ben Johnso
 - **Root package (`deploykit`)** — Domain types and service interfaces. Zero dependencies on implementations.
 - **`http`** — HTTP server, handlers, and routing. Depends on root domain types.
 - **`sqlite`** — Database layer using SQLite. Implements service interfaces from root.
-- **`docker`** — Docker client and container/network management. Implements provisioning interfaces.
+- **`docker`** — Docker client and network provisioning. Implements the `Provisioner` interface.
+- **`reconciler`** — Periodic reconciliation loop syncing DB state with Docker.
 - **`cmd/deploykitd`** — Main entry point. Wires everything together.
 
-Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`) depend on the root package, never on each other.
+Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`, `reconciler`) depend on the root package, never on each other.
 
 ## Tech Stack
 
@@ -29,18 +30,27 @@ deploykit.go       - Package marker
 project.go         - Project domain type and ProjectService interface
 user.go            - User domain type and UserService interface
 auth.go            - Session, APIKey types and AuthService interface
+service.go         - Service domain type and ServiceService interface
+deployment.go      - Deployment domain type and DeploymentService interface
+container.go       - Container domain type and ContainerService interface
+canvas.go          - CanvasNode, CanvasEdge types and CanvasService interface
+provisioner.go     - Provisioner interface (network management)
+slug.go            - Slug generation utility
 errors.go          - Domain error types and codes (ECONFLICT, EINTERNAL, etc.)
 cmd/
   deploykitd/      - Main binary entry point, config, graceful shutdown
 http/              - HTTP server, routes, handlers, middleware (auth, CORS)
+  canvas_hub.go    - WebSocket hub for real-time canvas collaboration
   spa_prod.go      - Embedded SPA file server (production, go:embed)
   spa_dev.go       - Dev stub (returns message to use Vite dev server)
   spa_assets/dist/ - Vite build output (gitignored, embedded into binary)
 sqlite/            - SQLite service implementations, migrations
-docker/            - Docker client, container/network management (planned)
+docker/            - Docker client and network provisioning
+reconciler/        - Periodic reconciliation loop (desired DB state vs Docker state)
 frontend/          - React Router + Vite + TypeScript SPA
   app/             - React source (routes, components, lib)
   vite.config.ts   - Vite config (builds to ../http/spa_assets/dist)
+docs/              - Project documentation
 ```
 
 ## Service Interfaces
@@ -50,6 +60,11 @@ All defined in the root `deploykit` package:
 - **`ProjectService`** — CRUD + filtered listing for projects
 - **`UserService`** — CRUD + filtered listing for users (bcrypt password hashing)
 - **`AuthService`** — Login, token refresh, logout, API key management, first-user registration gate
+- **`ServiceService`** — CRUD for services within projects
+- **`DeploymentService`** — Create, list, get, rollback deployments for a service
+- **`ContainerService`** — Create, get, list, update status, delete container records
+- **`CanvasService`** — Get canvas state, upsert/delete nodes and edges, batch position updates
+- **`Provisioner`** — Network management (create/remove/list Docker networks)
 
 ## Authentication
 
@@ -59,6 +74,10 @@ All defined in the root `deploykit` package:
 - **First-user gate:** `CanRegister()` returns true only when no users exist
 - **Rate limiting:** 5 login attempts per 15 minutes per email
 - **Middleware:** `authenticate()` checks Bearer token (tries session first, then API key)
+
+## Reconciler
+
+The reconciler (`reconciler/`) runs a periodic loop (default 30s) that syncs desired state from the database with actual Docker state. It creates networks for new projects and cleans up orphaned networks. It can also be triggered on-demand after project/deployment changes and prevents concurrent reconciliation cycles.
 
 ## Testing
 
@@ -81,6 +100,9 @@ All backend routes are prefixed with `/api/` (e.g., `/api/auth/login`, `/api/pro
 - **Build output:** `http/spa_assets/dist/` — embedded into Go binary via `go:embed`
 - **Dev workflow:** Two terminals — `make dev` (Go backend on :8080) + `make dev-frontend` (Vite on :5173 with API proxy)
 - **Build tags:** `go run -tags dev` skips SPA embedding so the backend can run without building the frontend
+- **Data fetching:** TanStack Query for declarative fetching and caching
+- **Canvas:** React Flow-based collaborative canvas with real-time WebSocket sync, cursor tracking, and connected users display
+- **Pages:** Login, Register, Projects list (with create dialog), Project detail with canvas
 
 ## Commands
 
