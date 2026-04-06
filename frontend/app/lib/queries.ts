@@ -103,6 +103,21 @@ export function useUpdateUser() {
   });
 }
 
+export function useUpdateProfile() {
+  return useMutation({
+    mutationFn: (data: {
+      name?: string;
+      email?: string;
+      new_password?: string;
+      current_password: string;
+    }) =>
+      api<User>("/auth/profile", {
+        method: "PATCH",
+        body: JSON.stringify(data),
+      }),
+  });
+}
+
 export function useDeleteUser() {
   const qc = useQueryClient();
   return useMutation({

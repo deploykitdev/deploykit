@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/heyjorgedev/deploykit"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // loginRateLimiter tracks login attempts per email to prevent brute force.
@@ -167,6 +168,49 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 	user := UserFromContext(r.Context())
 	jsonResponse(w, http.StatusOK, user)
+}
+
+func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r.Context())
+
+	var req deploykit.ProfileUpdate
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
+		return
+	}
+
+	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	// Re-fetch user to get fresh password hash (context user may be stale).
+	fresh, err := s.UserService.GetUser(r.Context(), user.ID)
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(fresh.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+		ve := deploykit.NewValidationErrors()
+		ve.Add("current_password", "Current password is incorrect.")
+		s.errorResponse(w, r, ve.Err())
+		return
+	}
+
+	update := deploykit.UserUpdate{
+		Email:    req.Email,
+		Name:     req.Name,
+		Password: req.NewPassword,
+	}
+
+	updated, err := s.UserService.UpdateUser(r.Context(), user.ID, update)
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, updated)
 }
 
 func (s *Server) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {

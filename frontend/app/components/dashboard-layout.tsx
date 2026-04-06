@@ -1,12 +1,11 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router";
-import { useAuth, useIsAdmin } from "../lib/auth";
-import { Button } from "@/components/ui/button";
+import { useIsAdmin } from "../lib/auth";
 import { AppLogo } from "./app-logo";
+import { UserMenu } from "./user-menu";
 import { Settings } from "lucide-react";
 
 export function DashboardLayout({ children, fluid }: { children: ReactNode; fluid?: boolean }) {
-  const { user, logout } = useAuth();
   const isAdmin = useIsAdmin();
 
   return (
@@ -17,9 +16,6 @@ export function DashboardLayout({ children, fluid }: { children: ReactNode; flui
             <AppLogo className="h-7 w-auto" />
           </Link>
           <nav className="flex items-center gap-4">
-            <span className="text-sm text-muted-foreground">
-              {user?.name} ({user?.email})
-            </span>
             {isAdmin && (
               <Link
                 to="/settings"
@@ -29,9 +25,7 @@ export function DashboardLayout({ children, fluid }: { children: ReactNode; flui
                 <Settings className="size-4" />
               </Link>
             )}
-            <Button variant="outline" size="sm" onClick={logout}>
-              Logout
-            </Button>
+            <UserMenu />
           </nav>
         </div>
       </header>

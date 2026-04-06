@@ -112,6 +112,7 @@ func (s *Server) registerRoutes() {
 	protected := http.NewServeMux()
 	protected.HandleFunc("POST /auth/logout", s.handleLogout)
 	protected.HandleFunc("GET /auth/me", s.handleGetCurrentUser)
+	protected.HandleFunc("PATCH /auth/profile", s.handleUpdateProfile)
 
 	protected.HandleFunc("POST /projects", s.handleCreateProject)
 	protected.HandleFunc("GET /projects", s.handleListProjects)

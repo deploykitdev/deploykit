@@ -108,6 +108,38 @@ func (u *UserUpdate) Validate() error {
 	return ve.Err()
 }
 
+// ProfileUpdate holds fields a user can update on their own profile.
+// CurrentPassword is required to authorize any change.
+// Role is intentionally excluded — users cannot change their own role.
+type ProfileUpdate struct {
+	Email           *string `json:"email"`
+	Name            *string `json:"name"`
+	NewPassword     *string `json:"new_password"`
+	CurrentPassword string  `json:"current_password"`
+}
+
+// Validate checks profile update fields.
+func (u *ProfileUpdate) Validate() error {
+	ve := NewValidationErrors()
+	if u.CurrentPassword == "" {
+		ve.Add("current_password", "Current password is required.")
+	}
+	if u.Email != nil && *u.Email == "" {
+		ve.Add("email", "Email cannot be empty.")
+	}
+	if u.Name != nil && *u.Name == "" {
+		ve.Add("name", "Name cannot be empty.")
+	}
+	if u.NewPassword != nil {
+		if *u.NewPassword == "" {
+			ve.Add("new_password", "New password cannot be empty.")
+		} else if len(*u.NewPassword) < 8 {
+			ve.Add("new_password", "New password must be at least 8 characters.")
+		}
+	}
+	return ve.Err()
+}
+
 // UserFilter controls filtering and pagination for listing users.
 type UserFilter struct {
 	Email  *string
