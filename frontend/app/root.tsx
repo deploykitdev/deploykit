@@ -30,7 +30,7 @@ export default function Root() {
       <AuthProvider>
         <Outlet />
       </AuthProvider>
-      <Toaster position="top-right" />
+      <Toaster position="top-right" closeButton />
       <ReactQueryDevtools initialIsOpen={false} />
     </QueryClientProvider>
   );
