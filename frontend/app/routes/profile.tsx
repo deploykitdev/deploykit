@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { RequireAuth, useAuth } from "../lib/auth";
 import { ApiError } from "../lib/api";
 import { useUpdateProfile } from "../lib/queries";
@@ -36,24 +37,31 @@ export default function ProfilePage() {
 
 type FormStatus =
   | { kind: "idle" }
-  | { kind: "success" }
   | { kind: "error"; errors: Record<string, string> };
 
 function parseApiError(err: unknown, fallback: string): Record<string, string> {
   if (err instanceof ApiError) {
     try {
       const body = JSON.parse(err.message);
-      if (body.errors) {
+      if (body.errors && typeof body.errors === "object") {
         const fieldErrors: Record<string, string> = {};
         for (const [field, msgs] of Object.entries(body.errors)) {
-          fieldErrors[field] = (msgs as string[])[0];
+          fieldErrors[field] = Array.isArray(msgs)
+            ? (msgs[0] as string)
+            : String(msgs);
         }
+        if (body.message) fieldErrors._form = body.message;
         return fieldErrors;
       }
       return { _form: body.message || fallback };
     } catch {
-      return { _form: fallback };
+      // Non-JSON error body — surface it directly so we can diagnose.
+      const raw = err.message?.trim();
+      return { _form: raw ? `${fallback} (${err.status}: ${raw})` : fallback };
     }
+  }
+  if (err instanceof Error) {
+    return { _form: `${fallback} ${err.message}` };
   }
   return { _form: fallback };
 }
@@ -64,7 +72,6 @@ function ProfileInfoCard() {
 
   const [name, setName] = useState(user?.name ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
-  const [currentPassword, setCurrentPassword] = useState("");
   const [status, setStatus] = useState<FormStatus>({ kind: "idle" });
 
   useEffect(() => {
@@ -83,21 +90,18 @@ function ProfileInfoCard() {
       name?: string;
       email?: string;
       current_password: string;
-    } = { current_password: currentPassword };
+    } = { current_password: "" };
 
     if (name !== user.name) data.name = name;
     if (email !== user.email) data.email = email;
 
-    if (!data.name && !data.email) {
-      setStatus({ kind: "error", errors: { _form: "No changes to save." } });
-      return;
-    }
-
     try {
-      await updateProfile.mutateAsync(data);
-      await refreshUser();
-      setCurrentPassword("");
-      setStatus({ kind: "success" });
+      if (data.name || data.email) {
+        await updateProfile.mutateAsync(data);
+        await refreshUser();
+      }
+      setStatus({ kind: "idle" });
+      toast.success("Profile information was updated successfully");
     } catch (err) {
       setStatus({
         kind: "error",
@@ -116,19 +120,13 @@ function ProfileInfoCard() {
         <CardHeader>
           <CardTitle>Profile Information</CardTitle>
           <CardDescription>
-            Update your name and email. Your current password is required to
-            save changes.
+            Update your name and email address.
           </CardDescription>
         </CardHeader>
         <CardContent>
           {errors._form && (
             <div className="mb-4">
               <FieldError>{errors._form}</FieldError>
-            </div>
-          )}
-          {status.kind === "success" && (
-            <div className="mb-4 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">
-              Profile updated.
             </div>
           )}
 
@@ -154,24 +152,6 @@ function ProfileInfoCard() {
                 placeholder="you@example.com"
               />
               <FieldError>{errors.email}</FieldError>
-            </Field>
-
-            <Field
-              className="sm:col-span-2"
-              data-invalid={errors.current_password ? true : undefined}
-            >
-              <FieldLabel htmlFor="profile-current-password">
-                Current Password
-              </FieldLabel>
-              <Input
-                id="profile-current-password"
-                type="password"
-                value={currentPassword}
-                onChange={(e) => setCurrentPassword(e.target.value)}
-                placeholder="Required to save changes"
-                autoComplete="current-password"
-              />
-              <FieldError>{errors.current_password}</FieldError>
             </Field>
           </div>
         </CardContent>
@@ -223,7 +203,8 @@ function ChangePasswordCard() {
       setNewPassword("");
       setConfirmPassword("");
       setCurrentPassword("");
-      setStatus({ kind: "success" });
+      setStatus({ kind: "idle" });
+      toast.success("Password was updated successfully");
     } catch (err) {
       setStatus({
         kind: "error",
@@ -250,11 +231,6 @@ function ChangePasswordCard() {
           {errors._form && (
             <div className="mb-4">
               <FieldError>{errors._form}</FieldError>
-            </div>
-          )}
-          {status.kind === "success" && (
-            <div className="mb-4 rounded-md border border-border bg-muted/30 px-3 py-2 text-sm text-foreground">
-              Password updated.
             </div>
           )}
 

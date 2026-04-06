@@ -4,6 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { queryClient } from "./lib/query-client";
 import { AuthProvider } from "./lib/auth";
+import { Toaster } from "@/components/ui/sonner";
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
@@ -29,6 +30,7 @@ export default function Root() {
       <AuthProvider>
         <Outlet />
       </AuthProvider>
+      <Toaster position="top-right" />
       <ReactQueryDevtools initialIsOpen={false} />
     </QueryClientProvider>
   );

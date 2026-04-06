@@ -184,18 +184,19 @@ func (s *Server) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Re-fetch user to get fresh password hash (context user may be stale).
-	fresh, err := s.UserService.GetUser(r.Context(), user.ID)
-	if err != nil {
-		s.errorResponse(w, r, err)
-		return
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(fresh.PasswordHash), []byte(req.CurrentPassword)); err != nil {
-		ve := deploykit.NewValidationErrors()
-		ve.Add("current_password", "Current password is incorrect.")
-		s.errorResponse(w, r, ve.Err())
-		return
+	// Only verify current password when the user is changing their password.
+	if req.NewPassword != nil {
+		fresh, err := s.UserService.GetUser(r.Context(), user.ID)
+		if err != nil {
+			s.errorResponse(w, r, err)
+			return
+		}
+		if err := bcrypt.CompareHashAndPassword([]byte(fresh.PasswordHash), []byte(req.CurrentPassword)); err != nil {
+			ve := deploykit.NewValidationErrors()
+			ve.Add("current_password", "Current password is incorrect.")
+			s.errorResponse(w, r, ve.Err())
+			return
+		}
 	}
 
 	update := deploykit.UserUpdate{

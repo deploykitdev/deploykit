@@ -109,7 +109,7 @@ func (u *UserUpdate) Validate() error {
 }
 
 // ProfileUpdate holds fields a user can update on their own profile.
-// CurrentPassword is required to authorize any change.
+// CurrentPassword is required only when changing the password.
 // Role is intentionally excluded — users cannot change their own role.
 type ProfileUpdate struct {
 	Email           *string `json:"email"`
@@ -121,9 +121,6 @@ type ProfileUpdate struct {
 // Validate checks profile update fields.
 func (u *ProfileUpdate) Validate() error {
 	ve := NewValidationErrors()
-	if u.CurrentPassword == "" {
-		ve.Add("current_password", "Current password is required.")
-	}
 	if u.Email != nil && *u.Email == "" {
 		ve.Add("email", "Email cannot be empty.")
 	}
@@ -135,6 +132,9 @@ func (u *ProfileUpdate) Validate() error {
 			ve.Add("new_password", "New password cannot be empty.")
 		} else if len(*u.NewPassword) < 8 {
 			ve.Add("new_password", "New password must be at least 8 characters.")
+		}
+		if u.CurrentPassword == "" {
+			ve.Add("current_password", "Current password is required to change your password.")
 		}
 	}
 	return ve.Err()
