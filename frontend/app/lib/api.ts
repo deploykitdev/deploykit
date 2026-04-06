@@ -37,12 +37,19 @@ export async function api<T>(
       if (!retry.ok) {
         throw new ApiError(retry.status, await retry.text());
       }
+      if (retry.status === 204) {
+        return undefined as T;
+      }
       return retry.json();
     }
   }
 
   if (!res.ok) {
     throw new ApiError(res.status, await res.text());
+  }
+
+  if (res.status === 204) {
+    return undefined as T;
   }
 
   return res.json();

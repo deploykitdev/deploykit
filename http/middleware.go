@@ -48,6 +48,25 @@ func (s *Server) authenticate(next http.Handler) http.Handler {
 	})
 }
 
+// requireRole returns middleware that restricts access to users with one of
+// the specified roles. Must be applied after authenticate.
+func (s *Server) requireRole(roles ...deploykit.Role) func(http.Handler) http.Handler {
+	allowed := make(map[deploykit.Role]bool, len(roles))
+	for _, r := range roles {
+		allowed[r] = true
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user := UserFromContext(r.Context())
+			if user == nil || !allowed[user.Role] {
+				s.errorResponse(w, r, deploykit.Errorf(deploykit.EFORBIDDEN, "Insufficient permissions."))
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // cors is middleware that sets CORS headers for SPA cross-origin requests.
 func (s *Server) cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -5,11 +5,25 @@ import (
 	"time"
 )
 
+// Role represents a user's authorization level.
+type Role string
+
+const (
+	RoleAdmin  Role = "admin"
+	RoleMember Role = "member"
+)
+
+// ValidRole reports whether r is a known role.
+func ValidRole(r Role) bool {
+	return r == RoleAdmin || r == RoleMember
+}
+
 // User represents a registered user account.
 type User struct {
 	ID           string    `json:"id"`
 	Email        string    `json:"email"`
 	Name         string    `json:"name"`
+	Role         Role      `json:"role"`
 	PasswordHash string    `json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
@@ -45,6 +59,7 @@ type UserCreate struct {
 	Email    string `json:"email"`
 	Name     string `json:"name"`
 	Password string `json:"password"`
+	Role     Role   `json:"role"`
 }
 
 // Validate checks that all required fields are present.
@@ -70,6 +85,7 @@ type UserUpdate struct {
 	Email    *string `json:"email"`
 	Name     *string `json:"name"`
 	Password *string `json:"password"`
+	Role     *Role   `json:"role"`
 }
 
 // Validate checks update fields.
@@ -86,12 +102,16 @@ func (u *UserUpdate) Validate() error {
 	} else if u.Password != nil && len(*u.Password) < 8 {
 		ve.Add("password", "Password must be at least 8 characters.")
 	}
+	if u.Role != nil && !ValidRole(*u.Role) {
+		ve.Add("role", "Role must be 'admin' or 'member'.")
+	}
 	return ve.Err()
 }
 
 // UserFilter controls filtering and pagination for listing users.
 type UserFilter struct {
 	Email  *string
+	Role   *Role
 	Offset int
 	Limit  int
 }

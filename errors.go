@@ -7,11 +7,12 @@ import (
 
 // Error codes returned by the application.
 const (
-	ECONFLICT      = "conflict"
-	EINTERNAL      = "internal"
-	EINVALID       = "invalid"
-	ENOTFOUND      = "not_found"
-	EUNAUTHORIZED  = "unauthorized"
+	ECONFLICT     = "conflict"
+	EFORBIDDEN    = "forbidden"
+	EINTERNAL     = "internal"
+	EINVALID      = "invalid"
+	ENOTFOUND     = "not_found"
+	EUNAUTHORIZED = "unauthorized"
 )
 
 // Error represents a domain-level error with an application error code

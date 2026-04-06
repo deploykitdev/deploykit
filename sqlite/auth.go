@@ -357,8 +357,8 @@ func (s *AuthService) findUserByEmail(ctx context.Context, email string) (*deplo
 	var createdAt, updatedAt string
 
 	err := s.db.db.QueryRowContext(ctx,
-		`SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE email = ?`, email,
-	).Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &createdAt, &updatedAt)
+		`SELECT id, email, name, role, password_hash, created_at, updated_at FROM users WHERE email = ?`, email,
+	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.PasswordHash, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "User not found.")
 	} else if err != nil {
@@ -377,8 +377,8 @@ func (s *AuthService) findUserByID(ctx context.Context, id string) (*deploykit.U
 	var createdAt, updatedAt string
 
 	err := s.db.db.QueryRowContext(ctx,
-		`SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE id = ?`, id,
-	).Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &createdAt, &updatedAt)
+		`SELECT id, email, name, role, password_hash, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.PasswordHash, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "User not found.")
 	} else if err != nil {

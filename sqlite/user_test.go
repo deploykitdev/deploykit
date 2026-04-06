@@ -40,6 +40,9 @@ func TestUserService_CreateUser(t *testing.T) {
 		if u.Name != "Alice" {
 			t.Fatalf("got name %q, want %q", u.Name, "Alice")
 		}
+		if u.Role != deploykit.RoleMember {
+			t.Fatalf("got role %q, want %q", u.Role, deploykit.RoleMember)
+		}
 		if u.PasswordHash == "" {
 			t.Fatal("expected non-empty PasswordHash")
 		}
@@ -51,6 +54,20 @@ func TestUserService_CreateUser(t *testing.T) {
 		}
 		if u.UpdatedAt.IsZero() {
 			t.Fatal("expected non-zero UpdatedAt")
+		}
+	})
+
+	t.Run("explicit admin role", func(t *testing.T) {
+		svc := NewUserService(MustOpenDB(t))
+
+		u, err := svc.CreateUser(context.Background(), deploykit.UserCreate{
+			Email: "admin@example.com", Name: "Admin", Password: "secret123", Role: deploykit.RoleAdmin,
+		})
+		if err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if u.Role != deploykit.RoleAdmin {
+			t.Fatalf("got role %q, want %q", u.Role, deploykit.RoleAdmin)
 		}
 	})
 
@@ -136,6 +153,9 @@ func TestUserService_GetUser(t *testing.T) {
 		if got.Name != created.Name {
 			t.Fatalf("got name %q, want %q", got.Name, created.Name)
 		}
+		if got.Role != deploykit.RoleMember {
+			t.Fatalf("got role %q, want %q", got.Role, deploykit.RoleMember)
+		}
 	})
 
 	t.Run("not found", func(t *testing.T) {
@@ -211,6 +231,31 @@ func TestUserService_ListUsers(t *testing.T) {
 		}
 		if count != 2 {
 			t.Fatalf("got count %d, want 2", count)
+		}
+	})
+
+	t.Run("filter by role", func(t *testing.T) {
+		svc := NewUserService(MustOpenDB(t))
+		svc.CreateUser(context.Background(), deploykit.UserCreate{
+			Email: "admin@example.com", Name: "Admin", Password: "password1", Role: deploykit.RoleAdmin,
+		})
+		MustCreateUser(t, svc, "member@example.com", "Member", "password2")
+
+		adminRole := deploykit.RoleAdmin
+		users, count, err := svc.ListUsers(context.Background(), deploykit.UserFilter{
+			Role: &adminRole,
+		})
+		if err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if len(users) != 1 {
+			t.Fatalf("got %d users, want 1", len(users))
+		}
+		if count != 1 {
+			t.Fatalf("got count %d, want 1", count)
+		}
+		if users[0].Email != "admin@example.com" {
+			t.Fatalf("got email %q, want %q", users[0].Email, "admin@example.com")
 		}
 	})
 
@@ -346,6 +391,38 @@ func TestUserService_UpdateUser(t *testing.T) {
 		}
 		if code := deploykit.ErrorCode(err); code != deploykit.ECONFLICT {
 			t.Fatalf("got error code %q, want %q", code, deploykit.ECONFLICT)
+		}
+	})
+
+	t.Run("update role", func(t *testing.T) {
+		svc := NewUserService(MustOpenDB(t))
+		original := MustCreateUser(t, svc, "alice@example.com", "Alice", "secret123")
+
+		adminRole := deploykit.RoleAdmin
+		updated, err := svc.UpdateUser(context.Background(), original.ID, deploykit.UserUpdate{
+			Role: &adminRole,
+		})
+		if err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if updated.Role != deploykit.RoleAdmin {
+			t.Fatalf("got role %q, want %q", updated.Role, deploykit.RoleAdmin)
+		}
+	})
+
+	t.Run("invalid role", func(t *testing.T) {
+		svc := NewUserService(MustOpenDB(t))
+		original := MustCreateUser(t, svc, "alice@example.com", "Alice", "secret123")
+
+		badRole := deploykit.Role("superuser")
+		_, err := svc.UpdateUser(context.Background(), original.ID, deploykit.UserUpdate{
+			Role: &badRole,
+		})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if code := deploykit.ErrorCode(err); code != deploykit.EINVALID {
+			t.Fatalf("got error code %q, want %q", code, deploykit.EINVALID)
 		}
 	})
 

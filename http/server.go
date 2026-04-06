@@ -132,11 +132,12 @@ func (s *Server) registerRoutes() {
 
 	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/containers", s.handleListContainers)
 
-	protected.HandleFunc("POST /users", s.handleCreateUser)
-	protected.HandleFunc("GET /users", s.handleListUsers)
-	protected.HandleFunc("GET /users/{id}", s.handleGetUser)
-	protected.HandleFunc("PATCH /users/{id}", s.handleUpdateUser)
-	protected.HandleFunc("DELETE /users/{id}", s.handleDeleteUser)
+	adminOnly := s.requireRole(deploykit.RoleAdmin)
+	protected.Handle("POST /users", adminOnly(http.HandlerFunc(s.handleCreateUser)))
+	protected.Handle("GET /users", adminOnly(http.HandlerFunc(s.handleListUsers)))
+	protected.Handle("GET /users/{id}", adminOnly(http.HandlerFunc(s.handleGetUser)))
+	protected.Handle("PATCH /users/{id}", adminOnly(http.HandlerFunc(s.handleUpdateUser)))
+	protected.Handle("DELETE /users/{id}", adminOnly(http.HandlerFunc(s.handleDeleteUser)))
 
 	protected.HandleFunc("GET /api-keys", s.handleListAPIKeys)
 	protected.HandleFunc("POST /api-keys", s.handleCreateAPIKey)
@@ -179,6 +180,8 @@ func (s *Server) errorResponse(w http.ResponseWriter, r *http.Request, err error
 		status = http.StatusBadRequest
 	case deploykit.EUNAUTHORIZED:
 		status = http.StatusUnauthorized
+	case deploykit.EFORBIDDEN:
+		status = http.StatusForbidden
 	case deploykit.ENOTFOUND:
 		status = http.StatusNotFound
 	case deploykit.ECONFLICT:

@@ -15,6 +15,10 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.Role == "" {
+		req.Role = deploykit.RoleMember
+	}
+
 	user, err := s.UserService.CreateUser(r.Context(), req)
 	if err != nil {
 		s.errorResponse(w, r, err)
@@ -41,6 +45,10 @@ func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
 
 	if v := r.URL.Query().Get("email"); v != "" {
 		filter.Email = &v
+	}
+	if v := r.URL.Query().Get("role"); v != "" {
+		role := deploykit.Role(v)
+		filter.Role = &role
 	}
 	if v := r.URL.Query().Get("offset"); v != "" {
 		filter.Offset, _ = strconv.Atoi(v)

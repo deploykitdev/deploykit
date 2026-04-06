@@ -32,18 +32,24 @@ func (s *UserService) CreateUser(ctx context.Context, create deploykit.UserCreat
 		return nil, fmt.Errorf("hashing password: %w", err)
 	}
 
+	role := create.Role
+	if role == "" {
+		role = deploykit.RoleMember
+	}
+
 	user := &deploykit.User{
 		ID:           uuid.New().String(),
 		Email:        create.Email,
 		Name:         create.Name,
+		Role:         role,
 		PasswordHash: string(hash),
 		CreatedAt:    time.Now().UTC(),
 		UpdatedAt:    time.Now().UTC(),
 	}
 
 	_, err = s.db.db.ExecContext(ctx,
-		`INSERT INTO users (id, email, name, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		user.ID, user.Email, user.Name, user.PasswordHash,
+		`INSERT INTO users (id, email, name, role, password_hash, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		user.ID, user.Email, user.Name, user.Role, user.PasswordHash,
 		user.CreatedAt.Format(timeFormat),
 		user.UpdatedAt.Format(timeFormat),
 	)
@@ -62,8 +68,8 @@ func (s *UserService) GetUser(ctx context.Context, id string) (*deploykit.User, 
 	var createdAt, updatedAt string
 
 	err := s.db.db.QueryRowContext(ctx,
-		`SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE id = ?`, id,
-	).Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &createdAt, &updatedAt)
+		`SELECT id, email, name, role, password_hash, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.PasswordHash, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "User not found.")
 	} else if err != nil {
@@ -84,6 +90,10 @@ func (s *UserService) ListUsers(ctx context.Context, filter deploykit.UserFilter
 		where = append(where, "email LIKE ?")
 		args = append(args, "%"+*filter.Email+"%")
 	}
+	if filter.Role != nil {
+		where = append(where, "role = ?")
+		args = append(args, string(*filter.Role))
+	}
 
 	limit := filter.Limit
 	if limit <= 0 {
@@ -97,7 +107,7 @@ func (s *UserService) ListUsers(ctx context.Context, filter deploykit.UserFilter
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, email, name, password_hash, created_at, updated_at, COUNT(*) OVER() AS total_count
+		`SELECT id, email, name, role, password_hash, created_at, updated_at, COUNT(*) OVER() AS total_count
 		 FROM users WHERE %s ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		strings.Join(where, " AND "),
 	)
@@ -115,7 +125,7 @@ func (s *UserService) ListUsers(ctx context.Context, filter deploykit.UserFilter
 	for rows.Next() {
 		u := &deploykit.User{}
 		var createdAt, updatedAt string
-		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &createdAt, &updatedAt, &totalCount); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Role, &u.PasswordHash, &createdAt, &updatedAt, &totalCount); err != nil {
 			return nil, 0, fmt.Errorf("scanning user row: %w", err)
 		}
 		u.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -143,8 +153,8 @@ func (s *UserService) UpdateUser(ctx context.Context, id string, update deployki
 	user := &deploykit.User{}
 	var createdAt, updatedAt string
 	err = tx.QueryRowContext(ctx,
-		`SELECT id, email, name, password_hash, created_at, updated_at FROM users WHERE id = ?`, id,
-	).Scan(&user.ID, &user.Email, &user.Name, &user.PasswordHash, &createdAt, &updatedAt)
+		`SELECT id, email, name, role, password_hash, created_at, updated_at FROM users WHERE id = ?`, id,
+	).Scan(&user.ID, &user.Email, &user.Name, &user.Role, &user.PasswordHash, &createdAt, &updatedAt)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "User not found.")
 	} else if err != nil {
@@ -165,11 +175,14 @@ func (s *UserService) UpdateUser(ctx context.Context, id string, update deployki
 		}
 		user.PasswordHash = string(hash)
 	}
+	if update.Role != nil {
+		user.Role = *update.Role
+	}
 	user.UpdatedAt = time.Now().UTC()
 
 	_, err = tx.ExecContext(ctx,
-		`UPDATE users SET email = ?, name = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
-		user.Email, user.Name, user.PasswordHash, user.UpdatedAt.Format(timeFormat), user.ID,
+		`UPDATE users SET email = ?, name = ?, role = ?, password_hash = ?, updated_at = ? WHERE id = ?`,
+		user.Email, user.Name, user.Role, user.PasswordHash, user.UpdatedAt.Format(timeFormat), user.ID,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint failed") {

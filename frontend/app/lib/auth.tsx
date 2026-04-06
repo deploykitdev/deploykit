@@ -12,6 +12,7 @@ interface User {
   id: string;
   email: string;
   name: string;
+  role: string;
 }
 
 interface AuthContextValue {
@@ -104,4 +105,25 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
   if (!user) return null;
 
   return <>{children}</>;
+}
+
+export function RequireAdmin({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!loading && (!user || user.role !== "admin")) {
+      navigate("/projects", { replace: true });
+    }
+  }, [user, loading, navigate]);
+
+  if (loading) return <p>Loading...</p>;
+  if (!user || user.role !== "admin") return null;
+
+  return <>{children}</>;
+}
+
+export function useIsAdmin() {
+  const { user } = useAuth();
+  return user?.role === "admin";
 }

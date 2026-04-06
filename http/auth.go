@@ -88,6 +88,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	req.Role = deploykit.RoleAdmin
+
 	user, err := s.UserService.CreateUser(r.Context(), req)
 	if err != nil {
 		s.errorResponse(w, r, err)
