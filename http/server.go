@@ -43,6 +43,7 @@ type Server struct {
 	DeploymentService deploykit.DeploymentService
 	ContainerService  deploykit.ContainerService
 	CanvasService     deploykit.CanvasService
+	SystemService     deploykit.SystemService
 
 	// canvasHub manages WebSocket connections for canvas collaboration.
 	canvasHub *canvasHub
@@ -139,6 +140,9 @@ func (s *Server) registerRoutes() {
 	protected.Handle("GET /users/{id}", adminOnly(http.HandlerFunc(s.handleGetUser)))
 	protected.Handle("PATCH /users/{id}", adminOnly(http.HandlerFunc(s.handleUpdateUser)))
 	protected.Handle("DELETE /users/{id}", adminOnly(http.HandlerFunc(s.handleDeleteUser)))
+
+	protected.Handle("GET /system/about", adminOnly(http.HandlerFunc(s.handleGetAbout)))
+	protected.Handle("GET /system/status", adminOnly(http.HandlerFunc(s.handleGetSystemStatus)))
 
 	protected.HandleFunc("GET /api-keys", s.handleListAPIKeys)
 	protected.HandleFunc("POST /api-keys", s.handleCreateAPIKey)

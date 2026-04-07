@@ -13,6 +13,8 @@ export default function SettingsLayout() {
             General
           </SettingsNavLink>
           <SettingsNavLink to="/settings/users">Users</SettingsNavLink>
+          <SettingsNavLink to="/settings/system">System</SettingsNavLink>
+          <SettingsNavLink to="/settings/about">About</SettingsNavLink>
         </nav>
         <Outlet />
       </DashboardLayout>

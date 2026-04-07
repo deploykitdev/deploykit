@@ -10,5 +10,7 @@ export default [
   route("settings", "routes/settings.tsx", [
     index("routes/settings/general.tsx"),
     route("users", "routes/settings/users.tsx"),
+    route("system", "routes/settings/system.tsx"),
+    route("about", "routes/settings/about.tsx"),
   ]),
 ] satisfies RouteConfig;

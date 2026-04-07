@@ -14,6 +14,7 @@ import (
 	dkhttp "github.com/heyjorgedev/deploykit/http"
 	"github.com/heyjorgedev/deploykit/reconciler"
 	"github.com/heyjorgedev/deploykit/sqlite"
+	"github.com/heyjorgedev/deploykit/sysinfo"
 )
 
 // Config represents the application configuration.
@@ -56,6 +57,8 @@ func NewMain(cfg Config, logger *slog.Logger) *Main {
 
 // Run starts the application and blocks until the context is cancelled.
 func (m *Main) Run(ctx context.Context) error {
+	startedAt := time.Now()
+
 	// Initialize SQLite database.
 	m.DB = sqlite.NewDB(m.Config.DBPath, m.Logger)
 	if err := m.DB.Open(); err != nil {
@@ -79,6 +82,7 @@ func (m *Main) Run(ctx context.Context) error {
 	deploymentService := sqlite.NewDeploymentService(m.DB)
 	containerService := sqlite.NewContainerService(m.DB)
 	canvasService := sqlite.NewCanvasService(m.DB)
+	systemService := sysinfo.NewService(m.DockerClient, m.Logger, m.Config.DBPath, "dev", startedAt)
 
 	// Initialize reconciler.
 	rec := reconciler.New(projectService, m.DockerClient, m.Logger, m.Config.ReconcileInterval)
@@ -96,6 +100,7 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.DeploymentService = deploymentService
 	m.HTTPServer.ContainerService = containerService
 	m.HTTPServer.CanvasService = canvasService
+	m.HTTPServer.SystemService = systemService
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)

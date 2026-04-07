@@ -17,10 +17,79 @@ export interface User {
   updated_at: string;
 }
 
+export interface SystemAbout {
+  deploykit: {
+    version: string;
+    go_version: string;
+    started_at: string;
+  };
+  docker: {
+    reachable: boolean;
+    error?: string;
+    server_version?: string;
+    api_version?: string;
+    os?: string;
+    kernel_version?: string;
+    architecture?: string;
+    storage_driver?: string;
+    logging_driver?: string;
+    cgroup_driver?: string;
+    docker_root_dir?: string;
+    warnings?: string[];
+  };
+  database: {
+    path: string;
+    size_bytes: number;
+  };
+}
+
+export interface SystemStatus {
+  host: {
+    hostname: string;
+    uptime: number;
+    cpu: {
+      cores: number;
+      usage_pct: number;
+      load1: number;
+      load5: number;
+      load15: number;
+    };
+    memory: {
+      total_bytes: number;
+      used_bytes: number;
+      usage_pct: number;
+    };
+    swap: {
+      total_bytes: number;
+      used_bytes: number;
+      usage_pct: number;
+    };
+    disks: Array<{
+      mountpoint: string;
+      total_bytes: number;
+      used_bytes: number;
+      usage_pct: number;
+    }>;
+  };
+  docker: {
+    reachable: boolean;
+    containers: number;
+    containers_running: number;
+    containers_stopped: number;
+    images: number;
+    images_size_bytes: number;
+    volumes: number;
+    volumes_size_bytes: number;
+    build_cache_bytes: number;
+  };
+}
+
 export const queryKeys = {
   projects: ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
   users: ["users"] as const,
+  systemAbout: ["system", "about"] as const,
+  systemStatus: ["system", "status"] as const,
 };
 
 export function useProjects() {
@@ -115,6 +184,22 @@ export function useUpdateProfile() {
         method: "PATCH",
         body: JSON.stringify(data),
       }),
+  });
+}
+
+export function useSystemAbout() {
+  return useQuery({
+    queryKey: queryKeys.systemAbout,
+    queryFn: () => api<SystemAbout>("/system/about"),
+  });
+}
+
+export function useSystemStatus() {
+  return useQuery({
+    queryKey: queryKeys.systemStatus,
+    queryFn: () => api<SystemStatus>("/system/status"),
+    refetchInterval: 3000,
+    refetchIntervalInBackground: false,
   });
 }
 

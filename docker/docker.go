@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/docker/docker/api/types"
+	"github.com/docker/docker/api/types/system"
 	"github.com/docker/docker/client"
 )
 
@@ -46,6 +48,25 @@ func (c *Client) Ping(ctx context.Context) error {
 
 	c.logger.Info("docker daemon connected", "api_version", resp.APIVersion)
 	return nil
+}
+
+// Info returns daemon-wide information from Docker (containers, images,
+// driver, kernel, hostname, etc.).
+func (c *Client) Info(ctx context.Context) (system.Info, error) {
+	return c.cli.Info(ctx)
+}
+
+// DiskUsage returns the daemon's view of disk usage by images, containers,
+// volumes, and the build cache.
+func (c *Client) DiskUsage(ctx context.Context) (types.DiskUsage, error) {
+	return c.cli.DiskUsage(ctx, types.DiskUsageOptions{})
+}
+
+// PingDaemon pings the Docker daemon and returns the raw ping response.
+// Unlike Ping, it does not log success — use this when you want to inspect
+// the response (e.g. for the API version) without producing log noise.
+func (c *Client) PingDaemon(ctx context.Context) (types.Ping, error) {
+	return c.cli.Ping(ctx)
 }
 
 // Close closes the underlying Docker API client.
