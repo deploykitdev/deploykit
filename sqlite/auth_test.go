@@ -315,7 +315,7 @@ func TestAuthService_APIKey(t *testing.T) {
 			Description: "Temp key",
 		})
 
-		if err := auth.DeleteAPIKey(ctx, created.ID); err != nil {
+		if err := auth.DeleteAPIKey(ctx, user.ID, created.ID); err != nil {
 			t.Fatal(err)
 		}
 
@@ -327,9 +327,32 @@ func TestAuthService_APIKey(t *testing.T) {
 	})
 
 	t.Run("delete not found", func(t *testing.T) {
-		err := auth.DeleteAPIKey(ctx, "nonexistent-id")
+		err := auth.DeleteAPIKey(ctx, user.ID, "nonexistent-id")
 		if code := deploykit.ErrorCode(err); code != deploykit.ENOTFOUND {
 			t.Fatalf("got %q, want %q", code, deploykit.ENOTFOUND)
+		}
+	})
+
+	t.Run("delete other user's key returns not found", func(t *testing.T) {
+		// Create a key owned by `user`.
+		created, err := auth.CreateAPIKey(ctx, user.ID, deploykit.APIKeyCreate{
+			Description: "Owned by user A",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Create a second user and attempt deletion as that user.
+		otherUser := MustCreateAuthUser(t, db, "other@example.com", "Other", "password123")
+
+		err = auth.DeleteAPIKey(ctx, otherUser.ID, created.ID)
+		if code := deploykit.ErrorCode(err); code != deploykit.ENOTFOUND {
+			t.Fatalf("got %q, want %q", code, deploykit.ENOTFOUND)
+		}
+
+		// Key should still exist and still validate.
+		if _, err := auth.ValidateAPIKey(ctx, created.Token); err != nil {
+			t.Fatalf("key should still be valid: %v", err)
 		}
 	})
 

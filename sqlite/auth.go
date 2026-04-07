@@ -274,8 +274,9 @@ func (s *AuthService) ListAPIKeys(ctx context.Context, userID string) ([]*deploy
 	return keys, nil
 }
 
-func (s *AuthService) DeleteAPIKey(ctx context.Context, id string) error {
-	result, err := s.db.db.ExecContext(ctx, `DELETE FROM api_keys WHERE id = ?`, id)
+func (s *AuthService) DeleteAPIKey(ctx context.Context, userID, id string) error {
+	result, err := s.db.db.ExecContext(ctx,
+		`DELETE FROM api_keys WHERE id = ? AND user_id = ?`, id, userID)
 	if err != nil {
 		return fmt.Errorf("deleting API key: %w", err)
 	}

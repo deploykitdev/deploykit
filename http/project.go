@@ -3,7 +3,6 @@ package http
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/heyjorgedev/deploykit"
 )
@@ -41,16 +40,18 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	var filter deploykit.ProjectFilter
+	filter := deploykit.ProjectFilter{
+		Name: parseQueryString(r, "name"),
+	}
 
-	if v := r.URL.Query().Get("name"); v != "" {
-		filter.Name = &v
+	var err error
+	if filter.Offset, err = parseQueryInt(r, "offset", 0); err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		filter.Offset, _ = strconv.Atoi(v)
-	}
-	if v := r.URL.Query().Get("limit"); v != "" {
-		filter.Limit, _ = strconv.Atoi(v)
+	if filter.Limit, err = parseQueryInt(r, "limit", 0); err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
 	projects, totalCount, err := s.ProjectService.ListProjects(r.Context(), filter)

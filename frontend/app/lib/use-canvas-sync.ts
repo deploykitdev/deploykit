@@ -9,7 +9,7 @@ import {
   applyEdgeChanges,
   addEdge,
 } from "@xyflow/react";
-import { CanvasWebSocket } from "./canvas-ws";
+import { CanvasWebSocket, type ConnectionStatus } from "./canvas-ws";
 
 export interface CursorInfo {
   user_id: string;
@@ -84,6 +84,8 @@ export function useCanvasSync(projectId: string) {
   const [edges, setEdges] = useState<Edge[]>([]);
   const [cursors, setCursors] = useState<Map<string, CursorInfo>>(new Map());
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
+  const [connectionStatus, setConnectionStatus] =
+    useState<ConnectionStatus>("disconnected");
   const wsRef = useRef<CanvasWebSocket | null>(null);
   const dragDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const cursorThrottleRef = useRef<number>(0);
@@ -179,13 +181,20 @@ export function useCanvasSync(projectId: string) {
       setConnectedUsers((prev) => prev.filter((u) => u.user_id !== user_id));
     });
 
+    const unsubscribeStatus = ws.onStatusChange(setConnectionStatus);
+
     ws.connect();
 
     return () => {
+      unsubscribeStatus();
       ws.disconnect();
       wsRef.current = null;
     };
   }, [projectId]);
+
+  const reconnect = useCallback(() => {
+    wsRef.current?.reconnect();
+  }, []);
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds));
@@ -244,6 +253,8 @@ export function useCanvasSync(projectId: string) {
     edges,
     cursors,
     connectedUsers,
+    connectionStatus,
+    reconnect,
     onNodesChange,
     onEdgesChange,
     onConnect,

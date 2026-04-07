@@ -3,7 +3,6 @@ package http
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/heyjorgedev/deploykit"
 )
@@ -49,11 +48,14 @@ func (s *Server) handleListDeployments(w http.ResponseWriter, r *http.Request) {
 		ServiceID: &serviceID,
 	}
 
-	if v := r.URL.Query().Get("offset"); v != "" {
-		filter.Offset, _ = strconv.Atoi(v)
+	var err error
+	if filter.Offset, err = parseQueryInt(r, "offset", 0); err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
-	if v := r.URL.Query().Get("limit"); v != "" {
-		filter.Limit, _ = strconv.Atoi(v)
+	if filter.Limit, err = parseQueryInt(r, "limit", 0); err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
 	deployments, totalCount, err := s.DeploymentService.ListDeployments(r.Context(), filter)

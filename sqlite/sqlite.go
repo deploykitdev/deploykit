@@ -34,6 +34,15 @@ func (db *DB) Open() error {
 		return fmt.Errorf("opening database: %w", err)
 	}
 
+	// SQLite is a single-writer database. Serialize all access through one
+	// connection so Go's sql.DB queue arbitrates access instead of letting
+	// multiple connections race for the writer lock and hit SQLITE_BUSY.
+	// Reads are cheap enough on a single VM that the simplicity of one pool
+	// outweighs a split read/write setup.
+	db.db.SetMaxOpenConns(1)
+	db.db.SetMaxIdleConns(1)
+	db.db.SetConnMaxLifetime(0)
+
 	// Enable WAL mode for better concurrent read performance.
 	if _, err := db.db.Exec(`PRAGMA journal_mode = WAL`); err != nil {
 		return fmt.Errorf("enabling wal mode: %w", err)

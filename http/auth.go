@@ -249,9 +249,10 @@ func (s *Server) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteAPIKey(w http.ResponseWriter, r *http.Request) {
+	user := UserFromContext(r.Context())
 	id := r.PathValue("id")
 
-	if err := s.AuthService.DeleteAPIKey(r.Context(), id); err != nil {
+	if err := s.AuthService.DeleteAPIKey(r.Context(), user.ID, id); err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}

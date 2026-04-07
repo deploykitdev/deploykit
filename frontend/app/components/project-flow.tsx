@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { ReactFlow, Background, Controls, Panel, useReactFlow } from "@xyflow/react";
+import { toast } from "sonner";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
@@ -14,11 +15,44 @@ export function ProjectFlow({ projectId }: ProjectFlowProps) {
     edges,
     cursors,
     connectedUsers,
+    connectionStatus,
+    reconnect,
     onNodesChange,
     onEdgesChange,
     onConnect,
     sendCursorMove,
   } = useCanvasSync(projectId);
+
+  // Surface disconnect + auto-reconnect attempts so users aren't left staring
+  // at a canvas that has silently stopped syncing. Only fire the disconnect
+  // toast after we've actually been connected at least once — otherwise the
+  // initial "disconnected" state shows a spurious toast on mount.
+  const disconnectedToastRef = useRef<string | number | null>(null);
+  const hasConnectedRef = useRef(false);
+  useEffect(() => {
+    if (connectionStatus === "connected") {
+      hasConnectedRef.current = true;
+      if (disconnectedToastRef.current != null) {
+        toast.dismiss(disconnectedToastRef.current);
+        disconnectedToastRef.current = null;
+        toast.success("Canvas reconnected");
+      }
+      return;
+    }
+
+    if (!hasConnectedRef.current) return;
+
+    if (connectionStatus === "disconnected" && disconnectedToastRef.current == null) {
+      disconnectedToastRef.current = toast.error("Canvas disconnected", {
+        description: "Changes will not sync until you reconnect.",
+        duration: Infinity,
+        action: {
+          label: "Reconnect",
+          onClick: () => reconnect(),
+        },
+      });
+    }
+  }, [connectionStatus, reconnect]);
 
   return (
     <div className="w-full flex-1 min-h-0 relative overflow-hidden">

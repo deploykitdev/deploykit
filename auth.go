@@ -107,9 +107,9 @@ type AuthService interface {
 	// ListAPIKeys returns all API keys for a user.
 	ListAPIKeys(ctx context.Context, userID string) ([]*APIKey, error)
 
-	// DeleteAPIKey deletes an API key by ID.
-	// Returns ENOTFOUND if not found.
-	DeleteAPIKey(ctx context.Context, id string) error
+	// DeleteAPIKey deletes an API key owned by userID.
+	// Returns ENOTFOUND if the key does not exist or is not owned by this user.
+	DeleteAPIKey(ctx context.Context, userID, id string) error
 
 	// CanRegister returns true if no users exist yet (first-user registration gate).
 	CanRegister(ctx context.Context) (bool, error)

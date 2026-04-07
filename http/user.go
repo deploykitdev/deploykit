@@ -3,7 +3,6 @@ package http
 import (
 	"encoding/json"
 	"net/http"
-	"strconv"
 
 	"github.com/heyjorgedev/deploykit"
 )
@@ -41,20 +40,22 @@ func (s *Server) handleGetUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListUsers(w http.ResponseWriter, r *http.Request) {
-	var filter deploykit.UserFilter
-
-	if v := r.URL.Query().Get("email"); v != "" {
-		filter.Email = &v
+	filter := deploykit.UserFilter{
+		Email: parseQueryString(r, "email"),
 	}
 	if v := r.URL.Query().Get("role"); v != "" {
 		role := deploykit.Role(v)
 		filter.Role = &role
 	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		filter.Offset, _ = strconv.Atoi(v)
+
+	var err error
+	if filter.Offset, err = parseQueryInt(r, "offset", 0); err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
-	if v := r.URL.Query().Get("limit"); v != "" {
-		filter.Limit, _ = strconv.Atoi(v)
+	if filter.Limit, err = parseQueryInt(r, "limit", 0); err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
 	users, totalCount, err := s.UserService.ListUsers(r.Context(), filter)
