@@ -31,11 +31,11 @@ func newCanvasHub(logger *slog.Logger) *canvasHub {
 	}
 }
 
-// getOrCreateRoom returns the room for a project, creating it if needed.
-func (h *canvasHub) getOrCreateRoom(projectID string) *projectRoom {
+// joinRoom atomically gets-or-creates the room for a project and inserts the
+// client. The user:joined broadcast (if needed) is sent after locks are released.
+// Lock order: h.mu -> room.mu (consistent with cleanupRoom).
+func (h *canvasHub) joinRoom(projectID string, client *canvasClient) *projectRoom {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	room, ok := h.rooms[projectID]
 	if !ok {
 		room = &projectRoom{
@@ -44,10 +44,27 @@ func (h *canvasHub) getOrCreateRoom(projectID string) *projectRoom {
 		}
 		h.rooms[projectID] = room
 	}
+
+	room.mu.Lock()
+	alreadyPresent := room.hasUser(client.userID)
+	room.insertLocked(client)
+	room.mu.Unlock()
+	h.mu.Unlock()
+
+	if !alreadyPresent {
+		payload, _ := json.Marshal(map[string]string{
+			"user_id":   client.userID,
+			"user_name": client.userName,
+		})
+		msg, _ := json.Marshal(wsMessage{Type: "user:joined", Payload: payload})
+		room.broadcast(client.connID, msg)
+	}
+
 	return room
 }
 
-// cleanupRoom removes a room if it has no connected clients.
+// cleanupRoom removes a room if it has no connected clients. Holds both h.mu
+// and room.mu so no joinRoom can race with the empty check.
 func (h *canvasHub) cleanupRoom(projectID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -57,11 +74,10 @@ func (h *canvasHub) cleanupRoom(projectID string) {
 		return
 	}
 
-	room.mu.RLock()
-	empty := len(room.clients) == 0
-	room.mu.RUnlock()
+	room.mu.Lock()
+	defer room.mu.Unlock()
 
-	if empty {
+	if len(room.clients) == 0 {
 		delete(h.rooms, projectID)
 	}
 }
@@ -73,22 +89,9 @@ type projectRoom struct {
 	clients   map[string]*canvasClient
 }
 
-// addClient registers a client and broadcasts a user:joined message if this is
-// the user's first connection to the room (deduplicates multi-tab).
-func (r *projectRoom) addClient(client *canvasClient) {
-	r.mu.Lock()
-	alreadyPresent := r.hasUser(client.userID)
+// insertLocked inserts a client into the room's client map. Caller must hold r.mu.
+func (r *projectRoom) insertLocked(client *canvasClient) {
 	r.clients[client.connID] = client
-	r.mu.Unlock()
-
-	if !alreadyPresent {
-		payload, _ := json.Marshal(map[string]string{
-			"user_id":   client.userID,
-			"user_name": client.userName,
-		})
-		msg, _ := json.Marshal(wsMessage{Type: "user:joined", Payload: payload})
-		r.broadcast(client.connID, msg)
-	}
 }
 
 // removeClient unregisters a client and broadcasts a user:left message only if

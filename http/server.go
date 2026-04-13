@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/heyjorgedev/deploykit"
 )
@@ -87,11 +86,9 @@ func (s *Server) Open() error {
 	return nil
 }
 
-// Close gracefully shuts down the server with a 10-second timeout.
-func (s *Server) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
+// Close gracefully shuts down the server. The caller controls the timeout
+// and any escalation (e.g. force-cancel on a second signal) via ctx.
+func (s *Server) Close(ctx context.Context) error {
 	s.logger.Info("shutting down http server")
 	return s.server.Shutdown(ctx)
 }

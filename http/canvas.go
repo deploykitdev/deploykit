@@ -64,21 +64,19 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create client and register with room.
-	room := s.canvasHub.getOrCreateRoom(projectID)
+	// Create client and atomically join the room.
 	client := &canvasClient{
 		connID:        uuid.New().String(),
 		userID:        user.ID,
 		userName:      user.Name,
 		conn:          conn,
 		send:          make(chan []byte, 256),
-		room:          room,
 		projectID:     projectID,
 		canvasService: s.CanvasService,
 		logger:        s.logger,
 	}
-
-	room.addClient(client)
+	room := s.canvasHub.joinRoom(projectID, client)
+	client.room = room
 
 	// Send initial canvas state.
 	if err := client.sendCanvasState(nodes, edges); err != nil {
@@ -102,7 +100,8 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Start write pump in background, read pump blocks.
-	ctx, cancel := context.WithCancel(context.Background())
+	// Parented off the request context so server shutdown tears the pumps down.
+	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
 	go client.writePump(ctx)

@@ -12,13 +12,15 @@ import (
 
 // loginRateLimiter tracks login attempts per email to prevent brute force.
 type loginRateLimiter struct {
-	mu       sync.Mutex
-	attempts map[string][]time.Time
+	mu        sync.Mutex
+	attempts  map[string][]time.Time
+	lastSweep time.Time
 }
 
 func newLoginRateLimiter() *loginRateLimiter {
 	return &loginRateLimiter{
-		attempts: make(map[string][]time.Time),
+		attempts:  make(map[string][]time.Time),
+		lastSweep: time.Now(),
 	}
 }
 
@@ -26,6 +28,24 @@ const (
 	loginRateWindow  = 15 * time.Minute
 	loginRateMaxHits = 5
 )
+
+// sweepLocked prunes expired entries from the entire map. Caller must hold l.mu.
+func (l *loginRateLimiter) sweepLocked(cutoff time.Time) {
+	for email, attempts := range l.attempts {
+		valid := attempts[:0]
+		for _, t := range attempts {
+			if t.After(cutoff) {
+				valid = append(valid, t)
+			}
+		}
+		if len(valid) == 0 {
+			delete(l.attempts, email)
+		} else {
+			l.attempts[email] = valid
+		}
+	}
+	l.lastSweep = time.Now()
+}
 
 // allow checks if a login attempt for the given email is allowed.
 func (l *loginRateLimiter) allow(email string) bool {
@@ -35,7 +55,12 @@ func (l *loginRateLimiter) allow(email string) bool {
 	now := time.Now()
 	cutoff := now.Add(-loginRateWindow)
 
-	// Prune old attempts.
+	// Periodic full sweep to bound map size against unique-email floods.
+	if now.Sub(l.lastSweep) > loginRateWindow {
+		l.sweepLocked(cutoff)
+	}
+
+	// Prune old attempts for this email.
 	attempts := l.attempts[email]
 	valid := attempts[:0]
 	for _, t := range attempts {
@@ -43,7 +68,11 @@ func (l *loginRateLimiter) allow(email string) bool {
 			valid = append(valid, t)
 		}
 	}
-	l.attempts[email] = valid
+	if len(valid) == 0 {
+		delete(l.attempts, email)
+	} else {
+		l.attempts[email] = valid
+	}
 
 	return len(valid) < loginRateMaxHits
 }

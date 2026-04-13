@@ -113,7 +113,7 @@ func (m *Main) Run(ctx context.Context) error {
 		for {
 			select {
 			case <-ticker.C:
-				if err := authService.CleanExpiredSessions(context.Background()); err != nil {
+				if err := authService.CleanExpiredSessions(ctx); err != nil {
 					m.Logger.Error("cleaning expired sessions", "err", err)
 				}
 			case <-ctx.Done():
@@ -125,8 +125,14 @@ func (m *Main) Run(ctx context.Context) error {
 	// Wait for context cancellation.
 	<-ctx.Done()
 
-	// Graceful shutdown.
-	if err := m.HTTPServer.Close(); err != nil {
+	// Graceful shutdown with a 10-second budget. A second SIGINT/SIGTERM
+	// cancels shutdownCtx and forces immediate close.
+	shutdownCtx, stopShutdown := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stopShutdown()
+	shutdownCtx, cancelShutdown := context.WithTimeout(shutdownCtx, 10*time.Second)
+	defer cancelShutdown()
+
+	if err := m.HTTPServer.Close(shutdownCtx); err != nil {
 		return fmt.Errorf("shutting down http server: %w", err)
 	}
 
