@@ -1,9 +1,11 @@
-import { useEffect, useRef } from "react";
-import { ReactFlow, Background, Controls, Panel, useReactFlow } from "@xyflow/react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ReactFlow, Background, Panel, useReactFlow } from "@xyflow/react";
 import { toast } from "sonner";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
+import { CanvasContextMenu } from "./canvas-context-menu";
+import { CanvasControls } from "./canvas-controls";
 
 interface ProjectFlowProps {
   projectId: string;
@@ -22,6 +24,15 @@ export function ProjectFlow({ projectId }: ProjectFlowProps) {
     onConnect,
     sendCursorMove,
   } = useCanvasSync(projectId);
+
+  const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+
+  const onPaneContextMenu = useCallback((event: MouseEvent | React.MouseEvent) => {
+    event.preventDefault();
+    setMenuPosition({ x: event.clientX, y: event.clientY });
+  }, []);
+
+  const closeMenu = useCallback(() => setMenuPosition(null), []);
 
   // Surface disconnect + auto-reconnect attempts so users aren't left staring
   // at a canvas that has silently stopped syncing. Only fire the disconnect
@@ -62,17 +73,20 @@ export function ProjectFlow({ projectId }: ProjectFlowProps) {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onPaneContextMenu={onPaneContextMenu}
+        onPaneClick={closeMenu}
         fitView
         maxZoom={1}
       >
         <Background />
-        <Controls />
         <Panel position="top-right">
           <AvatarStack users={connectedUsers} />
         </Panel>
         <CursorTracker onCursorMove={sendCursorMove} />
         <CursorOverlay cursors={cursors} />
+        <CanvasControls />
       </ReactFlow>
+      <CanvasContextMenu position={menuPosition} onClose={closeMenu} />
     </div>
   );
 }
