@@ -22,6 +22,7 @@ Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`, `
 - **Database:** SQLite (embedded, single-file)
 - **Container runtime:** Docker (via Docker SDK for Go)
 - **Frontend:** React Router v7 + Vite + TypeScript (SPA embedded into Go binary via `go:embed`)
+- **Host metrics:** `github.com/shirou/gopsutil/v4` (used by `sysinfo/` for CPU/memory/disk)
 
 ## Project Structure
 
@@ -34,6 +35,7 @@ service.go         - Service domain type and ServiceService interface
 deployment.go      - Deployment domain type and DeploymentService interface
 container.go       - Container domain type and ContainerService interface
 canvas.go          - CanvasNode, CanvasEdge types and CanvasService interface
+system.go          - SystemAbout, SystemStatus types and SystemService interface
 provisioner.go     - Provisioner interface (network management)
 slug.go            - Slug generation utility
 errors.go          - Domain error types and codes (ECONFLICT, EINTERNAL, etc.)
@@ -47,8 +49,10 @@ http/              - HTTP server, routes, handlers, middleware (auth, CORS)
 sqlite/            - SQLite service implementations, migrations
 docker/            - Docker client and network provisioning
 reconciler/        - Periodic reconciliation loop (desired DB state vs Docker state)
+sysinfo/           - SystemService implementation (gopsutil + Docker daemon introspection)
 frontend/          - React Router + Vite + TypeScript SPA
   app/             - React source (routes, components, lib)
+    routes/settings/ - Admin screens (general, users, system, about)
   vite.config.ts   - Vite config (builds to ../http/spa_assets/dist)
 docs/              - Project documentation
 ```
@@ -64,6 +68,7 @@ All defined in the root `deploykit` package:
 - **`DeploymentService`** — Create, list, get, rollback deployments for a service
 - **`ContainerService`** — Create, get, list, update status, delete container records
 - **`CanvasService`** — Get canvas state, upsert/delete nodes and edges, batch position updates
+- **`SystemService`** — Host, Docker, and DB introspection (`About`, `Status`); tolerates unreachable Docker by returning partial data
 - **`Provisioner`** — Network management (create/remove/list Docker networks)
 
 ## Authentication
@@ -74,6 +79,7 @@ All defined in the root `deploykit` package:
 - **First-user gate:** `CanRegister()` returns true only when no users exist
 - **Rate limiting:** 5 login attempts per 15 minutes per email
 - **Middleware:** `authenticate()` checks Bearer token (tries session first, then API key)
+- **Admin-only routes:** `adminOnly` middleware gates `/api/system/*` and other admin endpoints by checking the authenticated user's role
 
 ## Reconciler
 
@@ -87,7 +93,7 @@ The reconciler (`reconciler/`) runs a periodic loop (default 30s) that syncs des
 
 ## Configuration
 
-CLI flags with defaults: `-addr` (`:8080`), `-db` (`deploykit.db`), `-log-level` (`info`), `-cors-origin` (`*`)
+CLI flags with defaults: `-addr` (`:8080`), `-db` (`deploykit.db`), `-log-level` (`info`), `-cors-origin` (`*`), `-reconcile-interval` (`30s`)
 
 ## API Routing
 
@@ -102,7 +108,7 @@ All backend routes are prefixed with `/api/` (e.g., `/api/auth/login`, `/api/pro
 - **Build tags:** `go run -tags dev` skips SPA embedding so the backend can run without building the frontend
 - **Data fetching:** TanStack Query for declarative fetching and caching
 - **Canvas:** React Flow-based collaborative canvas with real-time WebSocket sync, cursor tracking, and connected users display
-- **Pages:** Login, Register, Projects list (with create dialog), Project detail with canvas
+- **Pages:** Login, Register, Projects list (with create dialog), Project detail with canvas, Settings (General, Users, System, About — admin-only)
 
 ## Commands
 
@@ -122,6 +128,7 @@ All backend routes are prefixed with `/api/` (e.g., `/api/auth/login`, `/api/pro
 - Error handling: return errors, don't panic; wrap with `fmt.Errorf("context: %w", err)`
 - Logging: use `log/slog` structured logging
 - API responses: JSON, use consistent envelope format
+- HTTP handlers return domain errors via `s.errorResponse(w, r, err)`, which maps error codes (`ECONFLICT`, `ENOTFOUND`, `EINVALID`, `EUNAUTHORIZED`, `EFORBIDDEN`, …) to HTTP status codes — don't write statuses directly
 - Tests: table-driven tests, use `testing` package
 - Naming: follow Go conventions (camelCase unexported, PascalCase exported)
 - Build output: binaries go in `dist/` (gitignored), never in the project root
