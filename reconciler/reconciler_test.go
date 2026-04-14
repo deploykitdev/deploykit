@@ -74,6 +74,15 @@ func (m *mockProvisioner) ListNetworks(context.Context) ([]string, error) {
 	return m.networks, nil
 }
 
+func (m *mockProvisioner) EnsureImage(context.Context, string) error { return nil }
+func (m *mockProvisioner) CreateAndStartContainer(context.Context, deploykit.ContainerSpec) (string, error) {
+	return "", nil
+}
+func (m *mockProvisioner) StopAndRemoveContainer(context.Context, string) error { return nil }
+func (m *mockProvisioner) ListContainers(context.Context) ([]deploykit.RunningContainer, error) {
+	return nil, nil
+}
+
 func testProject(id, slug string) *deploykit.Project {
 	return &deploykit.Project{ID: id, Slug: slug}
 }
@@ -170,7 +179,7 @@ func TestReconcileOnce(t *testing.T) {
 				removeErrFor: tt.removeErrFor,
 			}
 
-			rec := New(ps, prov, logger, 30*time.Second)
+			rec := New(ps, nil, nil, nil, prov, logger, 30*time.Second)
 			rec.ReconcileOnce(context.Background())
 
 			if tt.wantEnsure != nil {
@@ -207,7 +216,7 @@ func TestReconcileOnce(t *testing.T) {
 }
 
 func TestTrigger(t *testing.T) {
-	rec := New(nil, nil, slog.Default(), 30*time.Second)
+	rec := New(nil, nil, nil, nil, nil, slog.Default(), 30*time.Second)
 
 	// First trigger should succeed.
 	rec.Trigger()

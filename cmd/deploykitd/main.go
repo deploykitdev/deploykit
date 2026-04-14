@@ -85,7 +85,7 @@ func (m *Main) Run(ctx context.Context) error {
 	systemService := sysinfo.NewService(m.DockerClient, m.Logger, m.Config.DBPath, "dev", startedAt)
 
 	// Initialize reconciler.
-	rec := reconciler.New(projectService, m.DockerClient, m.Logger, m.Config.ReconcileInterval)
+	rec := reconciler.New(projectService, serviceService, deploymentService, containerService, m.DockerClient, m.Logger, m.Config.ReconcileInterval)
 	go rec.Run(ctx)
 
 	// Initialize HTTP server.
