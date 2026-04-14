@@ -45,6 +45,12 @@ export function useLogStream(
   const idRef = useRef(0);
 
   useEffect(() => {
+    setItems([]);
+    setError(null);
+    setStatus("idle");
+  }, [projectId, serviceId]);
+
+  useEffect(() => {
     if (!enabled) {
       setStatus("idle");
       return;
