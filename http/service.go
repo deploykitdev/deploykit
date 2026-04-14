@@ -131,5 +131,9 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.Reconciler != nil {
+		s.Reconciler.Trigger()
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 }

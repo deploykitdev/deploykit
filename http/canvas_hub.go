@@ -236,5 +236,6 @@ type canvasClient struct {
 	canvasService     deploykit.CanvasService
 	serviceService    deploykit.ServiceService
 	deploymentService deploykit.DeploymentService
+	reconciler        Triggerable
 	logger            *slog.Logger
 }

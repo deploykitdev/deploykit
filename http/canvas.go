@@ -75,6 +75,7 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 		canvasService:     s.CanvasService,
 		serviceService:    s.ServiceService,
 		deploymentService: s.DeploymentService,
+		reconciler:        s.Reconciler,
 		logger:            s.logger,
 	}
 	room := s.canvasHub.joinRoom(projectID, client)
@@ -371,6 +372,8 @@ func (c *canvasClient) handleNodeDelete(ctx context.Context, payload json.RawMes
 	if serviceID != nil {
 		if err := c.serviceService.DeleteService(ctx, *serviceID); err != nil {
 			c.logger.Error("deleting service after node delete", "err", err, "service_id", *serviceID)
+		} else if c.reconciler != nil {
+			c.reconciler.Trigger()
 		}
 	}
 
