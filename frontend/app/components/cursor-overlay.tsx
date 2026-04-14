@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import type { CursorInfo } from "@/lib/use-canvas-sync";
 import { getUserColor } from "@/lib/user-colors";
+
+const IDLE_MS = 3000;
 
 interface CursorOverlayProps {
   cursors: Map<string, CursorInfo>;
@@ -26,6 +28,8 @@ function SmoothCursor({ cursor }: { cursor: CursorInfo }) {
   const targetPos = useRef({ x: 0, y: 0 });
   const initialized = useRef(false);
   const rafId = useRef(0);
+  const idleTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [isIdle, setIsIdle] = useState(false);
   const flowToScreen = useRef(flowToScreenPosition);
   flowToScreen.current = flowToScreenPosition;
 
@@ -49,6 +53,14 @@ function SmoothCursor({ cursor }: { cursor: CursorInfo }) {
       currentPos.current = toContainerPos({ x: cursor.x, y: cursor.y });
       initialized.current = true;
     }
+
+    setIsIdle(false);
+    if (idleTimeout.current) clearTimeout(idleTimeout.current);
+    idleTimeout.current = setTimeout(() => setIsIdle(true), IDLE_MS);
+
+    return () => {
+      if (idleTimeout.current) clearTimeout(idleTimeout.current);
+    };
   }, [cursor.x, cursor.y]);
 
   useEffect(() => {
@@ -78,6 +90,7 @@ function SmoothCursor({ cursor }: { cursor: CursorInfo }) {
     <div
       ref={ref}
       className="pointer-events-none absolute top-0 left-0 z-[9999]"
+      style={{ opacity: isIdle ? 0 : 1, transition: "opacity 200ms ease-out" }}
     >
       <svg
         width="16"
