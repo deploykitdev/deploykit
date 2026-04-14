@@ -31,12 +31,22 @@ function SmoothCursor({ cursor }: { cursor: CursorInfo }) {
 
   const color = getUserColor(cursor.user_id);
 
+  // flowToScreenPosition returns viewport-relative coordinates, but the overlay
+  // is positioned absolutely inside the ReactFlow container. Subtract the
+  // container's top-left so cursors align with the canvas.
+  function toContainerPos(flowPos: { x: number; y: number }) {
+    const screen = flowToScreen.current(flowPos);
+    const container = ref.current?.closest(".react-flow") as HTMLElement | null;
+    if (!container) return screen;
+    const rect = container.getBoundingClientRect();
+    return { x: screen.x - rect.left, y: screen.y - rect.top };
+  }
+
   useEffect(() => {
     targetPos.current = { x: cursor.x, y: cursor.y };
 
     if (!initialized.current) {
-      const screenPos = flowToScreen.current({ x: cursor.x, y: cursor.y });
-      currentPos.current = screenPos;
+      currentPos.current = toContainerPos({ x: cursor.x, y: cursor.y });
       initialized.current = true;
     }
   }, [cursor.x, cursor.y]);
@@ -47,7 +57,7 @@ function SmoothCursor({ cursor }: { cursor: CursorInfo }) {
       const tgt = targetPos.current;
 
       // Recompute screen position each frame so panning/zooming stays correct.
-      const screenTarget = flowToScreen.current({ x: tgt.x, y: tgt.y });
+      const screenTarget = toContainerPos({ x: tgt.x, y: tgt.y });
 
       const lerpFactor = 0.15;
       cur.x += (screenTarget.x - cur.x) * lerpFactor;

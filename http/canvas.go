@@ -66,14 +66,16 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Create client and atomically join the room.
 	client := &canvasClient{
-		connID:        uuid.New().String(),
-		userID:        user.ID,
-		userName:      user.Name,
-		conn:          conn,
-		send:          make(chan []byte, 256),
-		projectID:     projectID,
-		canvasService: s.CanvasService,
-		logger:        s.logger,
+		connID:            uuid.New().String(),
+		userID:            user.ID,
+		userName:          user.Name,
+		conn:              conn,
+		send:              make(chan []byte, 256),
+		projectID:         projectID,
+		canvasService:     s.CanvasService,
+		serviceService:    s.ServiceService,
+		deploymentService: s.DeploymentService,
+		logger:            s.logger,
 	}
 	room := s.canvasHub.joinRoom(projectID, client)
 	client.room = room
@@ -90,6 +92,11 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Send list of connected users (deduplicated).
 	if err := client.sendConnectedUsers(room.connectedUsers()); err != nil {
 		s.logger.Error("sending connected users", "err", err)
+	}
+
+	// Send snapshot of any in-flight service drafts so late-joiners see ghosts.
+	if err := client.sendServiceDrafts(room.draftsList()); err != nil {
+		s.logger.Error("sending service drafts", "err", err)
 	}
 
 	s.logger.Info("canvas client connected",
@@ -213,6 +220,27 @@ func (c *canvasClient) sendConnectedUsers(users []connectedUser) error {
 	}
 }
 
+// sendServiceDrafts sends the current set of in-flight service drafts to this client.
+func (c *canvasClient) sendServiceDrafts(drafts []serviceDraft) error {
+	if drafts == nil {
+		drafts = []serviceDraft{}
+	}
+	payload, err := json.Marshal(map[string]any{"drafts": drafts})
+	if err != nil {
+		return fmt.Errorf("marshaling service drafts: %w", err)
+	}
+	msg, err := json.Marshal(wsMessage{Type: "service:drafts", Payload: payload})
+	if err != nil {
+		return fmt.Errorf("marshaling service drafts message: %w", err)
+	}
+	select {
+	case c.send <- msg:
+		return nil
+	default:
+		return fmt.Errorf("send buffer full")
+	}
+}
+
 // readPump reads messages from the WebSocket and dispatches them.
 func (c *canvasClient) readPump(ctx context.Context) {
 	defer c.conn.CloseNow()
@@ -293,6 +321,12 @@ func (c *canvasClient) handleMessage(ctx context.Context, msg wsMessage) {
 		c.handleEdgeDelete(ctx, msg.Payload)
 	case "cursor:move":
 		c.handleCursorMove(msg.Payload)
+	case "service:draft-start":
+		c.handleServiceDraftStart(msg.Payload)
+	case "service:draft-cancel":
+		c.handleServiceDraftCancel(msg.Payload)
+	case "service:create":
+		c.handleServiceCreate(ctx, msg.Payload)
 	default:
 		c.sendError(fmt.Sprintf("Unknown message type: %s", msg.Type))
 	}
@@ -326,10 +360,18 @@ func (c *canvasClient) handleNodeDelete(ctx context.Context, payload json.RawMes
 		return
 	}
 
-	if err := c.canvasService.DeleteNode(ctx, c.projectID, req.ID); err != nil {
+	serviceID, err := c.canvasService.DeleteNode(ctx, c.projectID, req.ID)
+	if err != nil {
 		c.logger.Error("deleting canvas node", "err", err)
 		c.sendError("Failed to delete node.")
 		return
+	}
+
+	// Cascade: a canvas service-node and its backing service share a lifecycle.
+	if serviceID != nil {
+		if err := c.serviceService.DeleteService(ctx, *serviceID); err != nil {
+			c.logger.Error("deleting service after node delete", "err", err, "service_id", *serviceID)
+		}
 	}
 
 	response, _ := json.Marshal(map[string]string{"id": req.ID})
@@ -416,6 +458,166 @@ func (c *canvasClient) handleCursorMove(payload json.RawMessage) {
 	})
 	msg, _ := json.Marshal(wsMessage{Type: "cursor:updated", Payload: response})
 	c.room.broadcast(c.connID, msg)
+}
+
+func (c *canvasClient) handleServiceDraftStart(payload json.RawMessage) {
+	var req struct {
+		DraftID string  `json:"draft_id"`
+		X       float64 `json:"x"`
+		Y       float64 `json:"y"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil || req.DraftID == "" {
+		c.sendError("Invalid draft start payload.")
+		return
+	}
+
+	draft := serviceDraft{
+		DraftID:  req.DraftID,
+		UserID:   c.userID,
+		UserName: c.userName,
+		X:        req.X,
+		Y:        req.Y,
+	}
+
+	c.room.mu.Lock()
+	c.room.drafts[req.DraftID] = draft
+	c.room.mu.Unlock()
+
+	response, _ := json.Marshal(draft)
+	msg, _ := json.Marshal(wsMessage{Type: "service:drafting", Payload: response})
+	c.room.broadcast(c.connID, msg)
+}
+
+func (c *canvasClient) handleServiceDraftCancel(payload json.RawMessage) {
+	var req struct {
+		DraftID string `json:"draft_id"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil || req.DraftID == "" {
+		return
+	}
+
+	c.room.mu.Lock()
+	d, existed := c.room.drafts[req.DraftID]
+	// Only owner can cancel.
+	if existed && d.UserID != c.userID {
+		c.room.mu.Unlock()
+		return
+	}
+	delete(c.room.drafts, req.DraftID)
+	c.room.mu.Unlock()
+
+	if !existed {
+		return
+	}
+
+	response, _ := json.Marshal(map[string]string{"draft_id": req.DraftID})
+	msg, _ := json.Marshal(wsMessage{Type: "service:draft-cancelled", Payload: response})
+	c.room.broadcast(c.connID, msg)
+}
+
+func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.RawMessage) {
+	var req struct {
+		DraftID string  `json:"draft_id"`
+		Name    string  `json:"name"`
+		Image   string  `json:"image"`
+		X       float64 `json:"x"`
+		Y       float64 `json:"y"`
+	}
+	if err := json.Unmarshal(payload, &req); err != nil || req.DraftID == "" {
+		c.sendError("Invalid service create payload.")
+		return
+	}
+	if req.Name == "" {
+		c.sendCreateError(req.DraftID, "Name is required.")
+		return
+	}
+	if req.Image == "" {
+		c.sendCreateError(req.DraftID, "Image is required.")
+		return
+	}
+
+	service, err := c.serviceService.CreateService(ctx, c.projectID, deploykit.ServiceCreate{Name: req.Name})
+	if err != nil {
+		c.logger.Error("creating service from canvas", "err", err)
+		c.sendCreateError(req.DraftID, serviceCreateErrorMessage(err))
+		return
+	}
+
+	deployment, err := c.deploymentService.CreateDeployment(ctx, service.ID, deploykit.DeploymentCreate{Image: req.Image})
+	if err != nil {
+		c.logger.Error("creating first deployment from canvas", "err", err)
+		if delErr := c.serviceService.DeleteService(ctx, service.ID); delErr != nil {
+			c.logger.Error("rolling back service after deployment failure", "err", delErr, "service_id", service.ID)
+		}
+		c.sendCreateError(req.DraftID, "Failed to create deployment.")
+		return
+	}
+
+	data, _ := json.Marshal(map[string]string{"image": deployment.Image})
+	node, err := c.canvasService.UpsertNode(ctx, c.projectID, deploykit.CanvasNodeUpsert{
+		ID:        uuid.New().String(),
+		Type:      deploykit.CanvasNodeTypeService,
+		Label:     service.Name,
+		PositionX: req.X,
+		PositionY: req.Y,
+		ServiceID: &service.ID,
+		Data:      string(data),
+	})
+	if err != nil {
+		c.logger.Error("creating canvas node for service", "err", err)
+		if delErr := c.serviceService.DeleteService(ctx, service.ID); delErr != nil {
+			c.logger.Error("rolling back service after node failure", "err", delErr, "service_id", service.ID)
+		}
+		c.sendCreateError(req.DraftID, "Failed to place service on canvas.")
+		return
+	}
+
+	// Clear the draft on success so the ghost disappears for other clients.
+	c.room.mu.Lock()
+	delete(c.room.drafts, req.DraftID)
+	c.room.mu.Unlock()
+
+	cancelledPayload, _ := json.Marshal(map[string]string{"draft_id": req.DraftID})
+	cancelledMsg, _ := json.Marshal(wsMessage{Type: "service:draft-cancelled", Payload: cancelledPayload})
+	c.room.broadcast(c.connID, cancelledMsg)
+
+	nodePayload, _ := json.Marshal(node)
+	nodeMsg, _ := json.Marshal(wsMessage{Type: "node:upserted", Payload: nodePayload})
+	c.room.broadcastAll(nodeMsg)
+
+	createdPayload, _ := json.Marshal(map[string]any{
+		"draft_id":   req.DraftID,
+		"service":    service,
+		"deployment": deployment,
+		"node":       node,
+	})
+	createdMsg, _ := json.Marshal(wsMessage{Type: "service:created", Payload: createdPayload})
+	select {
+	case c.send <- createdMsg:
+	default:
+	}
+}
+
+// sendCreateError sends a scoped error tied to a specific draft so the client
+// can surface it inline on the right form.
+func (c *canvasClient) sendCreateError(draftID, message string) {
+	payload, _ := json.Marshal(map[string]string{"draft_id": draftID, "message": message})
+	msg, _ := json.Marshal(wsMessage{Type: "service:create-error", Payload: payload})
+	select {
+	case c.send <- msg:
+	default:
+	}
+}
+
+// serviceCreateErrorMessage picks a user-facing message for a service-create
+// failure. Known domain errors (conflict, validation) surface their message so
+// the form can render it inline; anything else is a generic fallback.
+func serviceCreateErrorMessage(err error) string {
+	switch deploykit.ErrorCode(err) {
+	case deploykit.ECONFLICT, deploykit.EINVALID:
+		return deploykit.ErrorMessage(err)
+	}
+	return "Failed to create service."
 }
 
 // sendError sends an error message to this client.

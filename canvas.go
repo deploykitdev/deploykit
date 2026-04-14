@@ -50,8 +50,10 @@ type CanvasService interface {
 	// UpsertNode creates or updates a canvas node.
 	UpsertNode(ctx context.Context, projectID string, node CanvasNodeUpsert) (*CanvasNode, error)
 
-	// DeleteNode removes a canvas node and its connected edges.
-	DeleteNode(ctx context.Context, projectID string, nodeID string) error
+	// DeleteNode removes a canvas node and its connected edges. If the node
+	// referenced a service, returns that service ID so callers can cascade
+	// the service deletion; returns nil otherwise.
+	DeleteNode(ctx context.Context, projectID string, nodeID string) (*string, error)
 
 	// UpsertEdge creates or updates a canvas edge.
 	UpsertEdge(ctx context.Context, projectID string, edge CanvasEdgeUpsert) (*CanvasEdge, error)

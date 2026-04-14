@@ -185,23 +185,35 @@ func (s *CanvasService) UpsertNode(ctx context.Context, projectID string, node d
 	return result, nil
 }
 
-func (s *CanvasService) DeleteNode(ctx context.Context, projectID string, nodeID string) error {
-	result, err := s.db.db.ExecContext(ctx,
+func (s *CanvasService) DeleteNode(ctx context.Context, projectID string, nodeID string) (*string, error) {
+	tx, err := s.db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var serviceID *string
+	if err := tx.QueryRowContext(ctx,
+		`SELECT service_id FROM canvas_nodes WHERE id = ? AND project_id = ?`,
+		nodeID, projectID,
+	).Scan(&serviceID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Canvas node not found.")
+		}
+		return nil, fmt.Errorf("loading canvas node %s: %w", nodeID, err)
+	}
+
+	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM canvas_nodes WHERE id = ? AND project_id = ?`, nodeID, projectID,
-	)
-	if err != nil {
-		return fmt.Errorf("deleting canvas node %s: %w", nodeID, err)
+	); err != nil {
+		return nil, fmt.Errorf("deleting canvas node %s: %w", nodeID, err)
 	}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking rows affected: %w", err)
-	}
-	if rowsAffected == 0 {
-		return deploykit.Errorf(deploykit.ENOTFOUND, "Canvas node not found.")
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit: %w", err)
 	}
 
-	return nil
+	return serviceID, nil
 }
 
 func (s *CanvasService) UpsertEdge(ctx context.Context, projectID string, edge deploykit.CanvasEdgeUpsert) (*deploykit.CanvasEdge, error) {

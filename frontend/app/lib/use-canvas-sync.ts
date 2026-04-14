@@ -51,6 +51,22 @@ interface NodePosition {
   position_y: number;
 }
 
+export interface ServiceDraft {
+  draft_id: string;
+  user_id: string;
+  user_name: string;
+  x: number;
+  y: number;
+}
+
+export interface LocalServiceDraft {
+  draftId: string;
+  x: number;
+  y: number;
+  isSubmitting: boolean;
+  errorMessage: string | null;
+}
+
 function toFlowNode(dbNode: CanvasNode): Node {
   let extraData = {};
   try {
@@ -59,9 +75,21 @@ function toFlowNode(dbNode: CanvasNode): Node {
     // ignore
   }
 
+  let flowType: string;
+  switch (dbNode.type) {
+    case "group":
+      flowType = "group";
+      break;
+    case "service":
+      flowType = "service";
+      break;
+    default:
+      flowType = "default";
+  }
+
   return {
     id: dbNode.id,
-    type: dbNode.type === "group" ? "group" : "default",
+    type: flowType,
     position: { x: dbNode.position_x, y: dbNode.position_y },
     data: { label: dbNode.label, serviceId: dbNode.service_id, ...extraData },
     ...(dbNode.width && dbNode.height
@@ -86,9 +114,21 @@ export function useCanvasSync(projectId: string) {
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
+  const [remoteDrafts, setRemoteDrafts] = useState<Map<string, ServiceDraft>>(
+    new Map(),
+  );
+  const [localDrafts, setLocalDrafts] = useState<Map<string, LocalServiceDraft>>(
+    new Map(),
+  );
   const wsRef = useRef<CanvasWebSocket | null>(null);
-  const dragDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const dragThrottleLastRef = useRef<number>(0);
+  const dragThrottleTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const dragLatestRef = useRef<NodePosition[] | null>(null);
   const cursorThrottleRef = useRef<number>(0);
+  const remoteTargetsRef = useRef<Map<string, { x: number; y: number }>>(
+    new Map(),
+  );
+  const lerpRafRef = useRef<number>(0);
 
   useEffect(() => {
     const ws = new CanvasWebSocket(projectId);
@@ -125,18 +165,44 @@ export function useCanvasSync(projectId: string) {
     ws.on<{ positions: NodePosition[]; user_id: string }>(
       "node:moved",
       ({ positions }) => {
-        setNodes((prev) => {
-          const posMap = new Map(
-            positions.map((p) => [p.id, { x: p.position_x, y: p.position_y }]),
-          );
-          return prev.map((n) => {
-            const pos = posMap.get(n.id);
-            if (pos) {
-              return { ...n, position: pos };
-            }
-            return n;
+        for (const p of positions) {
+          remoteTargetsRef.current.set(p.id, {
+            x: p.position_x,
+            y: p.position_y,
           });
-        });
+        }
+        if (!lerpRafRef.current) {
+          const tick = () => {
+            const targets = remoteTargetsRef.current;
+            if (targets.size === 0) {
+              lerpRafRef.current = 0;
+              return;
+            }
+            const LERP = 0.25;
+            const SNAP = 0.5;
+            setNodes((prev) =>
+              prev.map((n) => {
+                const t = targets.get(n.id);
+                if (!t) return n;
+                const dx = t.x - n.position.x;
+                const dy = t.y - n.position.y;
+                if (Math.abs(dx) < SNAP && Math.abs(dy) < SNAP) {
+                  targets.delete(n.id);
+                  return { ...n, position: { x: t.x, y: t.y } };
+                }
+                return {
+                  ...n,
+                  position: {
+                    x: n.position.x + dx * LERP,
+                    y: n.position.y + dy * LERP,
+                  },
+                };
+              }),
+            );
+            lerpRafRef.current = requestAnimationFrame(tick);
+          };
+          lerpRafRef.current = requestAnimationFrame(tick);
+        }
       },
     );
 
@@ -181,6 +247,48 @@ export function useCanvasSync(projectId: string) {
       setConnectedUsers((prev) => prev.filter((u) => u.user_id !== user_id));
     });
 
+    ws.on<{ drafts: ServiceDraft[] }>("service:drafts", ({ drafts }) => {
+      setRemoteDrafts(new Map(drafts.map((d) => [d.draft_id, d])));
+    });
+
+    ws.on<ServiceDraft>("service:drafting", (draft) => {
+      setRemoteDrafts((prev) => new Map(prev).set(draft.draft_id, draft));
+    });
+
+    ws.on<{ draft_id: string }>("service:draft-cancelled", ({ draft_id }) => {
+      setRemoteDrafts((prev) => {
+        const next = new Map(prev);
+        next.delete(draft_id);
+        return next;
+      });
+    });
+
+    ws.on<{ draft_id: string }>("service:created", ({ draft_id }) => {
+      setLocalDrafts((prev) => {
+        if (!prev.has(draft_id)) return prev;
+        const next = new Map(prev);
+        next.delete(draft_id);
+        return next;
+      });
+    });
+
+    ws.on<{ draft_id: string; message: string }>(
+      "service:create-error",
+      ({ draft_id, message }) => {
+        setLocalDrafts((prev) => {
+          const existing = prev.get(draft_id);
+          if (!existing) return prev;
+          const next = new Map(prev);
+          next.set(draft_id, {
+            ...existing,
+            isSubmitting: false,
+            errorMessage: message,
+          });
+          return next;
+        });
+      },
+    );
+
     const unsubscribeStatus = ws.onStatusChange(setConnectionStatus);
 
     ws.connect();
@@ -189,6 +297,11 @@ export function useCanvasSync(projectId: string) {
       unsubscribeStatus();
       ws.disconnect();
       wsRef.current = null;
+      if (lerpRafRef.current) {
+        cancelAnimationFrame(lerpRafRef.current);
+        lerpRafRef.current = 0;
+      }
+      remoteTargetsRef.current.clear();
     };
   }, [projectId]);
 
@@ -205,16 +318,32 @@ export function useCanvasSync(projectId: string) {
         c.type === "position" && "position" in c && c.position != null,
     );
     if (positionChanges.length > 0) {
-      if (dragDebounceRef.current) clearTimeout(dragDebounceRef.current);
-      dragDebounceRef.current = setTimeout(() => {
-        wsRef.current?.send("node:move", {
-          positions: positionChanges.map((c) => ({
-            id: c.id,
-            position_x: c.position.x,
-            position_y: c.position.y,
-          })),
-        });
-      }, 50);
+      const positions = positionChanges.map((c) => ({
+        id: c.id,
+        position_x: c.position.x,
+        position_y: c.position.y,
+      }));
+      dragLatestRef.current = positions;
+
+      const THROTTLE_MS = 50;
+      const now = Date.now();
+      const elapsed = now - dragThrottleLastRef.current;
+
+      const flush = () => {
+        if (!dragLatestRef.current) return;
+        wsRef.current?.send("node:move", { positions: dragLatestRef.current });
+        dragThrottleLastRef.current = Date.now();
+        dragLatestRef.current = null;
+      };
+
+      if (elapsed >= THROTTLE_MS) {
+        flush();
+      } else if (!dragThrottleTimerRef.current) {
+        dragThrottleTimerRef.current = setTimeout(() => {
+          dragThrottleTimerRef.current = undefined;
+          flush();
+        }, THROTTLE_MS - elapsed);
+      }
     }
   }, []);
 
@@ -241,6 +370,74 @@ export function useCanvasSync(projectId: string) {
     });
   }, []);
 
+  const openServiceDraft = useCallback((x: number, y: number) => {
+    const draftId = crypto.randomUUID();
+    setLocalDrafts((prev) => {
+      const next = new Map(prev);
+      next.set(draftId, {
+        draftId,
+        x,
+        y,
+        isSubmitting: false,
+        errorMessage: null,
+      });
+      return next;
+    });
+    wsRef.current?.send("service:draft-start", { draft_id: draftId, x, y });
+  }, []);
+
+  const cancelServiceDraft = useCallback((draftId: string) => {
+    setLocalDrafts((prev) => {
+      if (!prev.has(draftId)) return prev;
+      const next = new Map(prev);
+      next.delete(draftId);
+      wsRef.current?.send("service:draft-cancel", { draft_id: draftId });
+      return next;
+    });
+  }, []);
+
+  const deleteNode = useCallback((nodeId: string) => {
+    wsRef.current?.send("node:delete", { id: nodeId });
+  }, []);
+
+  const moveLocalDraft = useCallback(
+    (draftId: string, x: number, y: number) => {
+      setLocalDrafts((prev) => {
+        const existing = prev.get(draftId);
+        if (!existing) return prev;
+        const next = new Map(prev);
+        next.set(draftId, { ...existing, x, y });
+        return next;
+      });
+      wsRef.current?.send("service:draft-start", { draft_id: draftId, x, y });
+    },
+    [],
+  );
+
+  const submitServiceDraft = useCallback(
+    (draftId: string, values: { name: string; image: string }) => {
+      setLocalDrafts((prev) => {
+        const existing = prev.get(draftId);
+        if (!existing) return prev;
+        wsRef.current?.send("service:create", {
+          draft_id: draftId,
+          name: values.name,
+          image: values.image,
+          x: existing.x,
+          y: existing.y,
+        });
+        const next = new Map(prev);
+        next.set(draftId, {
+          ...existing,
+          isSubmitting: true,
+          errorMessage: null,
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
   const sendCursorMove = useCallback((x: number, y: number) => {
     const now = Date.now();
     if (now - cursorThrottleRef.current < 100) return; // 10Hz throttle
@@ -254,10 +451,17 @@ export function useCanvasSync(projectId: string) {
     cursors,
     connectedUsers,
     connectionStatus,
+    remoteDrafts,
+    localDrafts,
     reconnect,
     onNodesChange,
     onEdgesChange,
     onConnect,
     sendCursorMove,
+    openServiceDraft,
+    cancelServiceDraft,
+    submitServiceDraft,
+    moveLocalDraft,
+    deleteNode,
   };
 }

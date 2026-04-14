@@ -41,6 +41,7 @@ func (h *canvasHub) joinRoom(projectID string, client *canvasClient) *projectRoo
 		room = &projectRoom{
 			projectID: projectID,
 			clients:   make(map[string]*canvasClient),
+			drafts:    make(map[string]serviceDraft),
 		}
 		h.rooms[projectID] = room
 	}
@@ -87,6 +88,20 @@ type projectRoom struct {
 	projectID string
 	mu        sync.RWMutex
 	clients   map[string]*canvasClient
+	// drafts tracks in-flight service drafts (forms open) so other clients can
+	// render ghost placeholders. Keyed by client-generated draft ID so a single
+	// user can have multiple concurrent drafts. Ephemeral — cleared on submit,
+	// cancel, or disconnect.
+	drafts map[string]serviceDraft
+}
+
+// serviceDraft is the ephemeral state of a drafting form.
+type serviceDraft struct {
+	DraftID  string  `json:"draft_id"`
+	UserID   string  `json:"user_id"`
+	UserName string  `json:"user_name"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
 }
 
 // insertLocked inserts a client into the room's client map. Caller must hold r.mu.
@@ -96,6 +111,8 @@ func (r *projectRoom) insertLocked(client *canvasClient) {
 
 // removeClient unregisters a client and broadcasts a user:left message only if
 // this was the user's last connection to the room (deduplicates multi-tab).
+// Also clears any in-flight service draft for that user and broadcasts
+// service:draft-cancelled.
 func (r *projectRoom) removeClient(connID string) {
 	r.mu.Lock()
 	client, ok := r.clients[connID]
@@ -104,6 +121,15 @@ func (r *projectRoom) removeClient(connID string) {
 		delete(r.clients, connID)
 	}
 	stillPresent := ok && r.hasUser(client.userID)
+	var cancelledDraftIDs []string
+	if ok && !stillPresent {
+		for id, d := range r.drafts {
+			if d.UserID == client.userID {
+				delete(r.drafts, id)
+				cancelledDraftIDs = append(cancelledDraftIDs, id)
+			}
+		}
+	}
 	r.mu.Unlock()
 
 	if ok && !stillPresent {
@@ -112,6 +138,12 @@ func (r *projectRoom) removeClient(connID string) {
 		})
 		msg, _ := json.Marshal(wsMessage{Type: "user:left", Payload: payload})
 		r.broadcastAll(msg)
+
+		for _, draftID := range cancelledDraftIDs {
+			dp, _ := json.Marshal(map[string]string{"draft_id": draftID})
+			dm, _ := json.Marshal(wsMessage{Type: "service:draft-cancelled", Payload: dp})
+			r.broadcastAll(dm)
+		}
 	}
 }
 
@@ -167,6 +199,18 @@ func (r *projectRoom) connectedUsers() []connectedUser {
 	return users
 }
 
+// draftsList returns a snapshot of all active service drafts in the room.
+func (r *projectRoom) draftsList() []serviceDraft {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]serviceDraft, 0, len(r.drafts))
+	for _, d := range r.drafts {
+		out = append(out, d)
+	}
+	return out
+}
+
 // hasUser returns true if any client in the room belongs to the given user ID.
 // Must be called with r.mu held (read or write).
 func (r *projectRoom) hasUser(userID string) bool {
@@ -187,8 +231,10 @@ type canvasClient struct {
 	send     chan []byte
 
 	// Dependencies for handling messages.
-	room          *projectRoom
-	projectID     string
-	canvasService deploykit.CanvasService
-	logger        *slog.Logger
+	room              *projectRoom
+	projectID         string
+	canvasService     deploykit.CanvasService
+	serviceService    deploykit.ServiceService
+	deploymentService deploykit.DeploymentService
+	logger            *slog.Logger
 }
