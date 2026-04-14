@@ -4,6 +4,7 @@ import { BoxIcon } from "lucide-react";
 export interface ServiceNodeData extends Record<string, unknown> {
   label: string;
   image?: string;
+  serviceId?: string;
 }
 
 export function ServiceNode({ data, selected }: NodeProps) {

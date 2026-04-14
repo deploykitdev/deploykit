@@ -17,7 +17,8 @@ import { NodeContextMenu } from "./node-context-menu";
 import { CanvasControls } from "./canvas-controls";
 import { AddServiceForm } from "./add-service-form";
 import { DraftingServiceGhost } from "./drafting-service-ghost";
-import { ServiceNode } from "./service-node";
+import { ServiceNode, type ServiceNodeData } from "./service-node";
+import { ServiceDetailPanel } from "./service-detail-panel";
 
 const nodeTypes = {
   service: ServiceNode,
@@ -96,7 +97,8 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     [onNodesChange, moveLocalDraft],
   );
 
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, getNodes, getViewport, setCenter } =
+    useReactFlow();
 
   const [menu, setMenu] = useState<
     | { screenX: number; screenY: number; flowX: number; flowY: number }
@@ -105,6 +107,55 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   const [nodeMenu, setNodeMenu] = useState<
     { screenX: number; screenY: number; nodeId: string } | null
   >(null);
+  const [selectedServiceId, setSelectedServiceId] = useState<string | null>(
+    null,
+  );
+
+  // Close the detail panel if the selected service is no longer on the canvas
+  // (e.g. it was deleted via context menu or by another user).
+  useEffect(() => {
+    if (!selectedServiceId) return;
+    const stillPresent = nodes.some(
+      (n) =>
+        n.type === "service" &&
+        (n.data as ServiceNodeData | undefined)?.serviceId ===
+          selectedServiceId,
+    );
+    if (!stillPresent) setSelectedServiceId(null);
+  }, [nodes, selectedServiceId]);
+
+  const onNodeClick = useCallback(
+    (_event: React.MouseEvent, node: Node) => {
+      if (node.type !== "service") return;
+      const data = node.data as ServiceNodeData | undefined;
+      if (data?.serviceId) setSelectedServiceId(data.serviceId);
+    },
+    [],
+  );
+
+  // Recenter the selected node into the canvas area left of the detail panel.
+  // PANEL_RESERVED matches the panel's effective width (w-[520px] + gutters).
+  // Only re-run when the selected id changes so ongoing node drags don't retrigger.
+  useEffect(() => {
+    if (!selectedServiceId) return;
+    const PANEL_RESERVED = 540;
+    const target = getNodes().find(
+      (n) =>
+        n.type === "service" &&
+        (n.data as ServiceNodeData | undefined)?.serviceId ===
+          selectedServiceId,
+    );
+    if (!target) return;
+    const width = target.measured?.width ?? 256;
+    const height = target.measured?.height ?? 80;
+    const centerX = target.position.x + width / 2;
+    const centerY = target.position.y + height / 2;
+    const { zoom } = getViewport();
+    setCenter(centerX + PANEL_RESERVED / 2 / zoom, centerY, {
+      zoom,
+      duration: 400,
+    });
+  }, [selectedServiceId, getNodes, getViewport, setCenter]);
 
   const onPaneContextMenu = useCallback(
     (event: MouseEvent | React.MouseEvent) => {
@@ -234,14 +285,24 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         onConnect={onConnect}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
+        onNodeClick={onNodeClick}
         onPaneClick={closeMenu}
         fitView
         maxZoom={1}
       >
         <Background />
-        <Panel position="top-right">
-          <AvatarStack users={connectedUsers} />
-        </Panel>
+        {selectedServiceId ? null : (
+          <Panel position="top-right">
+            <AvatarStack users={connectedUsers} />
+          </Panel>
+        )}
+        {selectedServiceId ? (
+          <ServiceDetailPanel
+            projectId={projectId}
+            serviceId={selectedServiceId}
+            onClose={() => setSelectedServiceId(null)}
+          />
+        ) : null}
         <CursorTracker onCursorMove={sendCursorMove} />
         <CursorOverlay cursors={cursors} />
         <CanvasControls />

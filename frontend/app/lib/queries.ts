@@ -17,6 +17,39 @@ export interface User {
   updated_at: string;
 }
 
+export interface PortMapping {
+  container_port: number;
+  host_port?: number;
+  protocol?: string;
+}
+
+export interface ResourceLimits {
+  cpu_shares?: number;
+  memory_mb?: number;
+}
+
+export interface Deployment {
+  id: string;
+  service_id: string;
+  image: string;
+  env_vars: Record<string, string> | null;
+  ports: PortMapping[] | null;
+  resources?: ResourceLimits | null;
+  replicas: number;
+  created_at: string;
+}
+
+export interface Service {
+  id: string;
+  project_id: string;
+  name: string;
+  status: string;
+  active_deployment_id: string | null;
+  created_at: string;
+  updated_at: string;
+  active_deployment?: Deployment | null;
+}
+
 export interface SystemAbout {
   deploykit: {
     version: string;
@@ -87,6 +120,10 @@ export interface SystemStatus {
 export const queryKeys = {
   projects: ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
+  service: (projectId: string, serviceId: string) =>
+    ["projects", projectId, "services", serviceId] as const,
+  deployments: (projectId: string, serviceId: string) =>
+    ["projects", projectId, "services", serviceId, "deployments"] as const,
   users: ["users"] as const,
   systemAbout: ["system", "about"] as const,
   systemStatus: ["system", "status"] as const,
@@ -104,6 +141,30 @@ export function useProject(id: string) {
   return useQuery({
     queryKey: queryKeys.project(id),
     queryFn: () => api<Project>(`/projects/${id}`),
+  });
+}
+
+export function useService(projectId: string, serviceId: string | null) {
+  return useQuery({
+    queryKey: serviceId
+      ? queryKeys.service(projectId, serviceId)
+      : ["projects", projectId, "services", "none"],
+    queryFn: () =>
+      api<Service>(`/projects/${projectId}/services/${serviceId}`),
+    enabled: !!serviceId,
+  });
+}
+
+export function useDeployments(projectId: string, serviceId: string | null) {
+  return useQuery({
+    queryKey: serviceId
+      ? queryKeys.deployments(projectId, serviceId)
+      : ["projects", projectId, "services", "none", "deployments"],
+    queryFn: () =>
+      api<{ data: Deployment[]; total_count: number }>(
+        `/projects/${projectId}/services/${serviceId}/deployments`,
+      ).then((r) => r.data ?? []),
+    enabled: !!serviceId,
   });
 }
 
