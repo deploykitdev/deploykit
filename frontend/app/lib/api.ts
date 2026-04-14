@@ -57,7 +57,7 @@ export async function api<T>(
 
 let refreshPromise: Promise<boolean> | null = null;
 
-function tryRefresh(): Promise<boolean> {
+export function tryRefresh(): Promise<boolean> {
   if (refreshPromise) return refreshPromise;
 
   refreshPromise = doRefresh().finally(() => {

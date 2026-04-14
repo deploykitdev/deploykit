@@ -101,6 +101,7 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.ContainerService = containerService
 	m.HTTPServer.CanvasService = canvasService
 	m.HTTPServer.SystemService = systemService
+	m.HTTPServer.LogStreamer = m.DockerClient
 
 	if err := m.HTTPServer.Open(); err != nil {
 		return fmt.Errorf("starting http server: %w", err)

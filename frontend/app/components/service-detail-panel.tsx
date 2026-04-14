@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Panel } from "@xyflow/react";
 import { BoxIcon, XIcon } from "lucide-react";
 import { Tabs, TabList, Tab, TabPanel } from "./ui/tabs";
@@ -7,6 +7,7 @@ import { ServiceDeploymentsTab } from "./service-deployments-tab";
 import { ServiceVariablesTab } from "./service-variables-tab";
 import { ServiceMetricsTab } from "./service-metrics-tab";
 import { ServiceSettingsTab } from "./service-settings-tab";
+import { ServiceLogsTab } from "./service-logs-tab";
 
 interface ServiceDetailPanelProps {
   projectId: string;
@@ -21,6 +22,7 @@ export function ServiceDetailPanel({
 }: ServiceDetailPanelProps) {
   const serviceQuery = useService(projectId, serviceId);
   const deploymentsQuery = useDeployments(projectId, serviceId);
+  const [tab, setTab] = useState("deployments");
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -55,9 +57,14 @@ export function ServiceDetailPanel({
         </button>
       </div>
 
-      <Tabs defaultValue="deployments" className="flex min-h-0 flex-1 flex-col gap-0">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(String(v))}
+        className="flex min-h-0 flex-1 flex-col gap-0"
+      >
         <TabList className="px-5">
           <Tab value="deployments">Deployments</Tab>
+          <Tab value="logs">Logs</Tab>
           <Tab value="variables">Variables</Tab>
           <Tab value="metrics">Metrics</Tab>
           <Tab value="settings">Settings</Tab>
@@ -71,8 +78,8 @@ export function ServiceDetailPanel({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <TabPanel value="deployments" className="p-5">
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <TabPanel value="deployments" className="h-full overflow-y-auto p-5">
             <ServiceDeploymentsTab
               deployments={deploymentsQuery.data}
               isLoading={deploymentsQuery.isLoading}
@@ -80,13 +87,20 @@ export function ServiceDetailPanel({
               activeDeploymentId={activeDeploymentId}
             />
           </TabPanel>
-          <TabPanel value="variables" className="p-5">
+          <TabPanel value="logs" className="h-full">
+            <ServiceLogsTab
+              projectId={projectId}
+              serviceId={serviceId}
+              active={tab === "logs"}
+            />
+          </TabPanel>
+          <TabPanel value="variables" className="h-full overflow-y-auto p-5">
             <ServiceVariablesTab />
           </TabPanel>
-          <TabPanel value="metrics" className="p-5">
+          <TabPanel value="metrics" className="h-full overflow-y-auto p-5">
             <ServiceMetricsTab />
           </TabPanel>
-          <TabPanel value="settings" className="p-5">
+          <TabPanel value="settings" className="h-full overflow-y-auto p-5">
             <ServiceSettingsTab />
           </TabPanel>
         </div>

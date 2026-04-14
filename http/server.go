@@ -44,6 +44,11 @@ type Server struct {
 	CanvasService     deploykit.CanvasService
 	SystemService     deploykit.SystemService
 
+	// LogStreamer streams logs from a container runtime (Docker, Podman, …)
+	// for endpoints like /logs that can't be expressed through the domain
+	// services.
+	LogStreamer deploykit.LogStreamer
+
 	// canvasHub manages WebSocket connections for canvas collaboration.
 	canvasHub *canvasHub
 }
@@ -130,6 +135,7 @@ func (s *Server) registerRoutes() {
 	protected.HandleFunc("POST /projects/{projectId}/services/{serviceId}/rollback", s.handleRollbackService)
 
 	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/containers", s.handleListContainers)
+	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/logs", s.handleStreamServiceLogs)
 
 	adminOnly := s.requireRole(deploykit.RoleAdmin)
 	protected.Handle("POST /users", adminOnly(http.HandlerFunc(s.handleCreateUser)))
