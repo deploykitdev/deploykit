@@ -10,9 +10,10 @@ frontend:
 	rm -rf http/spa_assets/dist
 	cp -r frontend/build/client http/spa_assets/dist
 
-# Run Go backend for development (no embedded SPA).
+# Run Go backend for development with auto-reload (no embedded SPA).
+# Requires air: go install github.com/air-verse/air@latest
 dev:
-	go run -tags dev ./cmd/deploykitd
+	air
 
 # Run frontend dev server (in a separate terminal).
 dev-frontend:

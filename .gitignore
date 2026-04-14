@@ -9,6 +9,7 @@
 /bin/
 /dist/
 /deploykitd
+/tmp/
 
 # Test
 *.test

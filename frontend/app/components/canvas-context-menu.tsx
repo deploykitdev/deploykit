@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { BoxIcon, HardDriveIcon } from "lucide-react";
+import { BoxesIcon, BoxIcon, HardDriveIcon } from "lucide-react";
 
 interface CanvasContextMenuProps {
   position: { x: number; y: number } | null;
@@ -36,6 +36,13 @@ export function CanvasContextMenu({ position, onClose }: CanvasContextMenuProps)
       >
         <BoxIcon className="size-4" />
         Add Service
+      </button>
+      <button
+        className="flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+        onClick={onClose}
+      >
+        <BoxesIcon className="size-4" />
+        Add Template
       </button>
       <button
         className="flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
