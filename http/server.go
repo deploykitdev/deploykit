@@ -34,6 +34,9 @@ type Server struct {
 	// Reconciler triggers infrastructure reconciliation after state changes.
 	Reconciler Triggerable
 
+	// EventBus broadcasts domain events to subscribers (e.g. the canvas hub).
+	EventBus deploykit.EventBus
+
 	// Service dependencies.
 	ProjectService    deploykit.ProjectService
 	UserService       deploykit.UserService
@@ -75,6 +78,10 @@ func NewServer(logger *slog.Logger) *Server {
 // Open starts listening on the configured address.
 // It returns once the server is actively listening.
 func (s *Server) Open() error {
+	if s.EventBus != nil {
+		s.canvasHub.subscribe(s.EventBus)
+	}
+
 	ln, err := net.Listen("tcp", s.Addr)
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.Addr, err)
@@ -95,6 +102,7 @@ func (s *Server) Open() error {
 // and any escalation (e.g. force-cancel on a second signal) via ctx.
 func (s *Server) Close(ctx context.Context) error {
 	s.logger.Info("shutting down http server")
+	s.canvasHub.unsubscribe()
 	return s.server.Shutdown(ctx)
 }
 

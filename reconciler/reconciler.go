@@ -23,6 +23,7 @@ type Reconciler struct {
 	logger      *slog.Logger
 	interval    time.Duration
 	trigger     chan struct{}
+	bus         deploykit.EventBus
 }
 
 // New creates a new Reconciler.
@@ -34,6 +35,7 @@ func New(
 	prov deploykit.Provisioner,
 	logger *slog.Logger,
 	interval time.Duration,
+	bus deploykit.EventBus,
 ) *Reconciler {
 	return &Reconciler{
 		projects:    ps,
@@ -44,7 +46,16 @@ func New(
 		logger:      logger,
 		interval:    interval,
 		trigger:     make(chan struct{}, 1),
+		bus:         bus,
 	}
+}
+
+// publish is a non-blocking helper that emits an event if a bus is attached.
+func (r *Reconciler) publish(ctx context.Context, evt deploykit.Event) {
+	if r.bus == nil {
+		return
+	}
+	r.bus.Publish(ctx, evt)
 }
 
 // Run starts the reconciliation loop. It blocks until ctx is cancelled.
@@ -230,7 +241,11 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 				"docker_id", rc.DockerID, "service_id", rc.ServiceID, "err", err)
 			continue
 		}
-		r.deleteContainerRow(ctx, rc.DockerID)
+		var projectID string
+		if svc := servicesByID[rc.ServiceID]; svc != nil {
+			projectID = svc.ProjectID
+		}
+		r.deleteContainerRow(ctx, rc.DockerID, projectID)
 	}
 
 	createdByService := map[string]int{}
@@ -249,17 +264,27 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 				"name", dc.spec.Name, "service_id", dc.service.ID, "err", err)
 			continue
 		}
-		if _, err := r.containers.CreateContainer(ctx, deploykit.ContainerCreate{
+		created, err := r.containers.CreateContainer(ctx, deploykit.ContainerCreate{
 			ServiceID:         dc.service.ID,
 			DeploymentID:      dc.dep.ID,
 			DockerContainerID: dockerID,
 			Status:            deploykit.ContainerStatusRunning,
-		}); err != nil {
+		})
+		if err != nil {
 			r.logger.Error("failed to record container",
 				"docker_id", dockerID, "service_id", dc.service.ID, "err", err)
 			continue
 		}
 		createdByService[dc.service.ID]++
+		r.publish(ctx, deploykit.Event{
+			Type:      deploykit.EventContainerCreated,
+			ProjectID: dc.service.ProjectID,
+			Payload: deploykit.ContainerCreatedPayload{
+				ServiceID:   dc.service.ID,
+				ContainerID: created.ID,
+				Status:      created.Status,
+			},
+		})
 	}
 
 	r.reconcileServiceStatuses(ctx, servicesByID, desired, actualByKey, desiredByService, createdByService)
@@ -305,10 +330,21 @@ func (r *Reconciler) reconcileServiceStatuses(
 			continue
 		}
 
+		oldStatus := svc.Status
 		if err := r.services.SetServiceStatus(ctx, svcID, target); err != nil {
 			r.logger.Error("failed to update service status",
 				"service_id", svcID, "status", target, "err", err)
+			continue
 		}
+		r.publish(ctx, deploykit.Event{
+			Type:      deploykit.EventServiceStatusChanged,
+			ProjectID: svc.ProjectID,
+			Payload: deploykit.ServiceStatusChangedPayload{
+				ServiceID: svcID,
+				OldStatus: oldStatus,
+				NewStatus: target,
+			},
+		})
 	}
 }
 
@@ -331,8 +367,10 @@ func buildSpec(project *deploykit.Project, svc *deploykit.Service, dep *deployki
 }
 
 // deleteContainerRow removes the DB row(s) for a container identified by its
-// runtime ID. Best-effort: errors are logged, not propagated.
-func (r *Reconciler) deleteContainerRow(ctx context.Context, dockerID string) {
+// runtime ID. Best-effort: errors are logged, not propagated. projectID is
+// used when publishing the resulting ContainerDeleted event; pass "" if the
+// owning project is unknown (event is then skipped).
+func (r *Reconciler) deleteContainerRow(ctx context.Context, dockerID, projectID string) {
 	rows, _, err := r.containers.ListContainers(ctx, deploykit.ContainerFilter{Limit: 100})
 	if err != nil {
 		r.logger.Error("failed to list container rows for cleanup", "err", err)
@@ -344,6 +382,17 @@ func (r *Reconciler) deleteContainerRow(ctx context.Context, dockerID string) {
 		}
 		if err := r.containers.DeleteContainer(ctx, row.ID); err != nil {
 			r.logger.Error("failed to delete container row", "id", row.ID, "err", err)
+			continue
+		}
+		if projectID != "" {
+			r.publish(ctx, deploykit.Event{
+				Type:      deploykit.EventContainerDeleted,
+				ProjectID: projectID,
+				Payload: deploykit.ContainerDeletedPayload{
+					ServiceID:   row.ServiceID,
+					ContainerID: row.ID,
+				},
+			})
 		}
 	}
 }

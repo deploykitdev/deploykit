@@ -22,6 +22,17 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if s.EventBus != nil {
+		// Look up the service to get the ProjectID so subscribers can filter.
+		if svc, err := s.ServiceService.GetService(r.Context(), serviceID); err == nil {
+			s.EventBus.Publish(r.Context(), deploykit.Event{
+				Type:      deploykit.EventDeploymentCreated,
+				ProjectID: svc.ProjectID,
+				Payload:   deploykit.DeploymentCreatedPayload{Deployment: deployment},
+			})
+		}
+	}
+
 	if s.Reconciler != nil {
 		s.Reconciler.Trigger()
 	}

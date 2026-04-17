@@ -76,6 +76,7 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 		serviceService:    s.ServiceService,
 		deploymentService: s.DeploymentService,
 		reconciler:        s.Reconciler,
+		eventBus:          s.EventBus,
 		logger:            s.logger,
 	}
 	room := s.canvasHub.joinRoom(projectID, client)
@@ -372,8 +373,17 @@ func (c *canvasClient) handleNodeDelete(ctx context.Context, payload json.RawMes
 	if serviceID != nil {
 		if err := c.serviceService.DeleteService(ctx, *serviceID); err != nil {
 			c.logger.Error("deleting service after node delete", "err", err, "service_id", *serviceID)
-		} else if c.reconciler != nil {
-			c.reconciler.Trigger()
+		} else {
+			if c.eventBus != nil {
+				c.eventBus.Publish(ctx, deploykit.Event{
+					Type:      deploykit.EventServiceDeleted,
+					ProjectID: c.projectID,
+					Payload:   deploykit.ServiceDeletedPayload{ServiceID: *serviceID},
+				})
+			}
+			if c.reconciler != nil {
+				c.reconciler.Trigger()
+			}
 		}
 	}
 
@@ -545,6 +555,13 @@ func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.Raw
 		c.sendCreateError(req.DraftID, serviceCreateErrorMessage(err))
 		return
 	}
+	if c.eventBus != nil {
+		c.eventBus.Publish(ctx, deploykit.Event{
+			Type:      deploykit.EventServiceCreated,
+			ProjectID: c.projectID,
+			Payload:   deploykit.ServiceCreatedPayload{Service: service},
+		})
+	}
 
 	deployment, err := c.deploymentService.CreateDeployment(ctx, service.ID, deploykit.DeploymentCreate{Image: req.Image})
 	if err != nil {
@@ -554,6 +571,13 @@ func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.Raw
 		}
 		c.sendCreateError(req.DraftID, "Failed to create deployment.")
 		return
+	}
+	if c.eventBus != nil {
+		c.eventBus.Publish(ctx, deploykit.Event{
+			Type:      deploykit.EventDeploymentCreated,
+			ProjectID: c.projectID,
+			Payload:   deploykit.DeploymentCreatedPayload{Deployment: deployment},
+		})
 	}
 
 	data, _ := json.Marshal(map[string]string{"image": deployment.Image})

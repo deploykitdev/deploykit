@@ -154,11 +154,6 @@ export function useProjectServices(projectId: string) {
       api<{ data: Service[]; total_count: number }>(
         `/projects/${projectId}/services?limit=100`,
       ).then((r) => r.data ?? []),
-    refetchInterval: (query) => {
-      const services = query.state.data;
-      if (!services) return false;
-      return services.some((s) => s.status === "deploying") ? 5000 : false;
-    },
   });
 }
 
@@ -170,10 +165,6 @@ export function useService(projectId: string, serviceId: string | null) {
     queryFn: () =>
       api<Service>(`/projects/${projectId}/services/${serviceId}`),
     enabled: !!serviceId,
-    refetchInterval: (query) => {
-      const s = query.state.data?.status;
-      return s === "deploying" ? 2000 : false;
-    },
   });
 }
 

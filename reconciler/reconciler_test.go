@@ -179,7 +179,7 @@ func TestReconcileOnce(t *testing.T) {
 				removeErrFor: tt.removeErrFor,
 			}
 
-			rec := New(ps, nil, nil, nil, prov, logger, 30*time.Second)
+			rec := New(ps, nil, nil, nil, prov, logger, 30*time.Second, nil)
 			rec.ReconcileOnce(context.Background())
 
 			if tt.wantEnsure != nil {
@@ -216,7 +216,7 @@ func TestReconcileOnce(t *testing.T) {
 }
 
 func TestTrigger(t *testing.T) {
-	rec := New(nil, nil, nil, nil, nil, slog.Default(), 30*time.Second)
+	rec := New(nil, nil, nil, nil, nil, slog.Default(), 30*time.Second, nil)
 
 	// First trigger should succeed.
 	rec.Trigger()

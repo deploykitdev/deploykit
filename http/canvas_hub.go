@@ -21,6 +21,8 @@ type canvasHub struct {
 	mu     sync.RWMutex
 	rooms  map[string]*projectRoom
 	logger *slog.Logger
+
+	sub deploykit.Subscription
 }
 
 // newCanvasHub creates a new canvasHub.
@@ -29,6 +31,78 @@ func newCanvasHub(logger *slog.Logger) *canvasHub {
 		rooms:  make(map[string]*projectRoom),
 		logger: logger,
 	}
+}
+
+// subscribe starts forwarding events from bus to matching project rooms.
+// Must be called at most once before serving traffic.
+func (h *canvasHub) subscribe(bus deploykit.EventBus) {
+	sub := bus.Subscribe(128)
+	h.sub = sub
+	go func() {
+		for evt := range sub.C() {
+			h.dispatchEvent(evt)
+		}
+	}()
+}
+
+// unsubscribe stops the subscription goroutine, if any.
+func (h *canvasHub) unsubscribe() {
+	if h.sub != nil {
+		h.sub.Close()
+		h.sub = nil
+	}
+}
+
+// dispatchEvent routes a single bus event to the matching project room.
+func (h *canvasHub) dispatchEvent(evt deploykit.Event) {
+	if evt.ProjectID == "" {
+		return
+	}
+	h.mu.RLock()
+	room, ok := h.rooms[evt.ProjectID]
+	h.mu.RUnlock()
+	if !ok {
+		return
+	}
+
+	msg, ok := translateBusEvent(evt)
+	if !ok {
+		return
+	}
+	room.broadcastAll(msg)
+}
+
+// translateBusEvent maps a domain Event to the WebSocket envelope consumed by
+// the frontend canvas. Returns (nil, false) for events the canvas doesn't care
+// about.
+func translateBusEvent(evt deploykit.Event) ([]byte, bool) {
+	var msgType string
+	switch evt.Type {
+	case deploykit.EventServiceCreated:
+		msgType = "service:upserted"
+	case deploykit.EventServiceStatusChanged:
+		msgType = "service:status-changed"
+	case deploykit.EventServiceDeleted:
+		msgType = "service:deleted"
+	case deploykit.EventDeploymentCreated:
+		msgType = "deployment:created"
+	case deploykit.EventContainerCreated:
+		msgType = "container:created"
+	case deploykit.EventContainerDeleted:
+		msgType = "container:deleted"
+	default:
+		return nil, false
+	}
+
+	payload, err := json.Marshal(evt.Payload)
+	if err != nil {
+		return nil, false
+	}
+	msg, err := json.Marshal(wsMessage{Type: msgType, Payload: payload})
+	if err != nil {
+		return nil, false
+	}
+	return msg, true
 }
 
 // joinRoom atomically gets-or-creates the room for a project and inserts the
@@ -237,5 +311,6 @@ type canvasClient struct {
 	serviceService    deploykit.ServiceService
 	deploymentService deploykit.DeploymentService
 	reconciler        Triggerable
+	eventBus          deploykit.EventBus
 	logger            *slog.Logger
 }

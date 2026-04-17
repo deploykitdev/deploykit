@@ -9,7 +9,9 @@ import {
   applyEdgeChanges,
   addEdge,
 } from "@xyflow/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { CanvasWebSocket, type ConnectionStatus } from "./canvas-ws";
+import { queryKeys, type Service, type Deployment } from "./queries";
 
 export interface CursorInfo {
   user_id: string;
@@ -108,12 +110,14 @@ function toFlowEdge(dbEdge: CanvasEdge): Edge {
 }
 
 export function useCanvasSync(projectId: string) {
+  const queryClient = useQueryClient();
   const [nodes, setNodes] = useState<Node[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [cursors, setCursors] = useState<Map<string, CursorInfo>>(new Map());
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
+  const prevStatusRef = useRef<ConnectionStatus>("disconnected");
   const [remoteDrafts, setRemoteDrafts] = useState<Map<string, ServiceDraft>>(
     new Map(),
   );
@@ -263,14 +267,31 @@ export function useCanvasSync(projectId: string) {
       });
     });
 
-    ws.on<{ draft_id: string }>("service:created", ({ draft_id }) => {
-      setLocalDrafts((prev) => {
-        if (!prev.has(draft_id)) return prev;
-        const next = new Map(prev);
-        next.delete(draft_id);
-        return next;
-      });
-    });
+    ws.on<{ draft_id: string; service?: Service }>(
+      "service:created",
+      ({ draft_id, service }) => {
+        setLocalDrafts((prev) => {
+          if (!prev.has(draft_id)) return prev;
+          const next = new Map(prev);
+          next.delete(draft_id);
+          return next;
+        });
+        if (service) {
+          queryClient.setQueryData<Service>(
+            queryKeys.service(projectId, service.id),
+            service,
+          );
+          queryClient.setQueryData<Service[]>(
+            queryKeys.projectServices(projectId),
+            (prev) => {
+              if (!prev) return prev;
+              if (prev.some((s) => s.id === service.id)) return prev;
+              return [...prev, service];
+            },
+          );
+        }
+      },
+    );
 
     ws.on<{ draft_id: string; message: string }>(
       "service:create-error",
@@ -289,7 +310,94 @@ export function useCanvasSync(projectId: string) {
       },
     );
 
-    const unsubscribeStatus = ws.onStatusChange(setConnectionStatus);
+    ws.on<{ service: Service }>("service:upserted", ({ service }) => {
+      queryClient.setQueryData<Service>(
+        queryKeys.service(projectId, service.id),
+        service,
+      );
+      queryClient.setQueryData<Service[]>(
+        queryKeys.projectServices(projectId),
+        (prev) => {
+          if (!prev) return prev;
+          const idx = prev.findIndex((s) => s.id === service.id);
+          if (idx >= 0) {
+            const next = [...prev];
+            next[idx] = service;
+            return next;
+          }
+          return [...prev, service];
+        },
+      );
+    });
+
+    ws.on<{ service_id: string; old_status: string; new_status: string }>(
+      "service:status-changed",
+      ({ service_id, new_status }) => {
+        queryClient.setQueryData<Service>(
+          queryKeys.service(projectId, service_id),
+          (prev) => (prev ? { ...prev, status: new_status } : prev),
+        );
+        queryClient.setQueryData<Service[]>(
+          queryKeys.projectServices(projectId),
+          (prev) =>
+            prev
+              ? prev.map((s) =>
+                  s.id === service_id ? { ...s, status: new_status } : s,
+                )
+              : prev,
+        );
+      },
+    );
+
+    ws.on<{ service_id: string }>("service:deleted", ({ service_id }) => {
+      queryClient.removeQueries({
+        queryKey: queryKeys.service(projectId, service_id),
+      });
+      queryClient.setQueryData<Service[]>(
+        queryKeys.projectServices(projectId),
+        (prev) => (prev ? prev.filter((s) => s.id !== service_id) : prev),
+      );
+    });
+
+    ws.on<{ deployment: Deployment }>(
+      "deployment:created",
+      ({ deployment }) => {
+        // CreateDeployment transitions the service to "deploying" in the DB,
+        // so mirror that here to avoid a gap until the reconciler catches up.
+        const patch = (s: Service): Service => ({
+          ...s,
+          status: "deploying",
+          active_deployment_id: deployment.id,
+          active_deployment: deployment,
+        });
+        queryClient.setQueryData<Service>(
+          queryKeys.service(projectId, deployment.service_id),
+          (prev) => (prev ? patch(prev) : prev),
+        );
+        queryClient.setQueryData<Service[]>(
+          queryKeys.projectServices(projectId),
+          (prev) =>
+            prev
+              ? prev.map((s) => (s.id === deployment.service_id ? patch(s) : s))
+              : prev,
+        );
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.deployments(projectId, deployment.service_id),
+        });
+      },
+    );
+
+    const unsubscribeStatus = ws.onStatusChange((status) => {
+      // On reconnect (reconnecting → connected) resync service queries in case
+      // push updates arrived while disconnected.
+      if (status === "connected" && prevStatusRef.current === "reconnecting") {
+        queryClient.invalidateQueries({
+          queryKey: ["projects", projectId, "services"],
+        });
+      }
+      prevStatusRef.current = status;
+      setConnectionStatus(status);
+    });
 
     ws.connect();
 
@@ -303,7 +411,7 @@ export function useCanvasSync(projectId: string) {
       }
       remoteTargetsRef.current.clear();
     };
-  }, [projectId]);
+  }, [projectId, queryClient]);
 
   const reconnect = useCallback(() => {
     wsRef.current?.reconnect();

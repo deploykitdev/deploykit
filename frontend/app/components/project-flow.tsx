@@ -9,9 +9,8 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { toast } from "sonner";
-import { useQueryClient } from "@tanstack/react-query";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
-import { useProjectServices, queryKeys, type Service } from "@/lib/queries";
+import { useProjectServices, type Service } from "@/lib/queries";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
 import { CanvasContextMenu } from "./canvas-context-menu";
@@ -28,9 +27,9 @@ const nodeTypes = {
   "service-drafting": DraftingServiceGhost,
 };
 
-const DRAFT_NODE_WIDTH = 256;
-const DRAFT_NODE_HEIGHT = 220;
-const GHOST_NODE_HEIGHT = 60;
+const DRAFT_NODE_WIDTH = 320;
+const DRAFT_NODE_HEIGHT = 272;
+const GHOST_NODE_HEIGHT = DRAFT_NODE_HEIGHT;
 
 interface ProjectFlowProps {
   projectId: string;
@@ -71,24 +70,6 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     for (const s of servicesData ?? []) map.set(s.id, s);
     return map;
   }, [servicesData]);
-
-  // The canvas WebSocket drives create/delete of service nodes. Invalidate the
-  // REST services list whenever the set of service ids on the canvas shifts,
-  // so status/image info stays in sync without a dedicated WS message.
-  const qc = useQueryClient();
-  const serviceIdsKey = useMemo(() => {
-    const ids: string[] = [];
-    for (const n of nodes) {
-      if (n.type !== "service") continue;
-      const id = (n.data as ServiceNodeData | undefined)?.serviceId;
-      if (id) ids.push(id);
-    }
-    ids.sort();
-    return ids.join(",");
-  }, [nodes]);
-  useEffect(() => {
-    qc.invalidateQueries({ queryKey: queryKeys.projectServices(projectId) });
-  }, [qc, projectId, serviceIdsKey]);
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {

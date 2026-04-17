@@ -25,20 +25,43 @@ export function AddServiceForm({ data }: NodeProps) {
 
   return (
     <div
-      className="w-64 overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-lg ring-1 ring-foreground/10 nopan"
+      className="nopan relative w-80 overflow-hidden rounded-xl border border-primary/40 bg-card text-card-foreground shadow-lg ring-[3px] ring-primary/10"
       onContextMenu={(e) => {
         e.preventDefault();
         e.stopPropagation();
       }}
     >
       <div
-        className="service-draft-drag-handle flex h-6 cursor-grab items-center justify-center border-b bg-muted/50 text-muted-foreground active:cursor-grabbing"
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-40 dark:opacity-25"
+        style={{
+          backgroundImage:
+            "radial-gradient(circle at 1px 1px, currentColor 0.6px, transparent 0)",
+          backgroundSize: "14px 14px",
+          color: "var(--muted-foreground)",
+          WebkitMaskImage:
+            "radial-gradient(ellipse 85% 100% at 100% 0%, black 10%, transparent 75%)",
+          maskImage:
+            "radial-gradient(ellipse 85% 100% at 100% 0%, black 10%, transparent 75%)",
+        }}
+      />
+
+      <div
+        aria-hidden
+        className="absolute inset-y-0 left-0 w-[3px] bg-primary"
+      />
+
+      <div
+        className="service-draft-drag-handle relative flex cursor-grab items-center gap-2 border-b px-5 py-2.5 active:cursor-grabbing"
         title="Drag to move"
       >
-        <GripVerticalIcon className="size-3 rotate-90" />
+        <GripVerticalIcon className="-ml-1.5 size-3.5 text-muted-foreground/50" />
+        <span className="font-mono text-[10px] font-medium uppercase tracking-[0.22em] text-muted-foreground/70">
+          New Service
+        </span>
       </div>
+
       <form
-        style={{ padding: "0.75rem" }}
         onSubmit={(e) => {
           e.preventDefault();
           if (!name.trim() || !image.trim()) return;
@@ -51,10 +74,13 @@ export function AddServiceForm({ data }: NodeProps) {
             onCancel(draftId);
           }
         }}
-        className="flex flex-col gap-2"
+        className="relative flex flex-col gap-3.5 px-5 pt-4 pb-4"
       >
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-medium" htmlFor={`name-${draftId}`}>
+        <div className="flex flex-col gap-1.5">
+          <label
+            className="font-mono text-[9px] font-medium uppercase tracking-[0.22em] text-muted-foreground/60"
+            htmlFor={`name-${draftId}`}
+          >
             Name
           </label>
           <Input
@@ -67,8 +93,12 @@ export function AddServiceForm({ data }: NodeProps) {
             autoComplete="off"
           />
         </div>
-        <div className="flex flex-col gap-1">
-          <label className="text-xs font-medium" htmlFor={`image-${draftId}`}>
+
+        <div className="flex flex-col gap-1.5">
+          <label
+            className="font-mono text-[9px] font-medium uppercase tracking-[0.22em] text-muted-foreground/60"
+            htmlFor={`image-${draftId}`}
+          >
             Image
           </label>
           <Input
@@ -78,12 +108,15 @@ export function AddServiceForm({ data }: NodeProps) {
             placeholder="nginx:latest"
             disabled={isSubmitting}
             autoComplete="off"
+            className="font-mono"
           />
         </div>
+
         {errorMessage ? (
           <p className="text-xs text-destructive">{errorMessage}</p>
         ) : null}
-        <div className="flex justify-end gap-2 pt-1">
+
+        <div className="mt-0.5 flex items-center justify-end gap-2">
           <Button
             type="button"
             variant="ghost"

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/heyjorgedev/deploykit/docker"
+	"github.com/heyjorgedev/deploykit/events"
 	dkhttp "github.com/heyjorgedev/deploykit/http"
 	"github.com/heyjorgedev/deploykit/reconciler"
 	"github.com/heyjorgedev/deploykit/sqlite"
@@ -84,8 +85,11 @@ func (m *Main) Run(ctx context.Context) error {
 	canvasService := sqlite.NewCanvasService(m.DB)
 	systemService := sysinfo.NewService(m.DockerClient, m.Logger, m.Config.DBPath, "dev", startedAt)
 
+	// Initialize event bus (in-process pub/sub).
+	bus := events.NewBus(m.Logger)
+
 	// Initialize reconciler.
-	rec := reconciler.New(projectService, serviceService, deploymentService, containerService, m.DockerClient, m.Logger, m.Config.ReconcileInterval)
+	rec := reconciler.New(projectService, serviceService, deploymentService, containerService, m.DockerClient, m.Logger, m.Config.ReconcileInterval, bus)
 	go rec.Run(ctx)
 
 	// Initialize HTTP server.
@@ -93,6 +97,7 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.Addr = m.Config.Addr
 	m.HTTPServer.CORSOrigin = m.Config.CORSOrigin
 	m.HTTPServer.Reconciler = rec
+	m.HTTPServer.EventBus = bus
 	m.HTTPServer.ProjectService = projectService
 	m.HTTPServer.UserService = userService
 	m.HTTPServer.AuthService = authService

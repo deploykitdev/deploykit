@@ -131,6 +131,14 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.EventBus != nil {
+		s.EventBus.Publish(r.Context(), deploykit.Event{
+			Type:      deploykit.EventServiceDeleted,
+			ProjectID: projectID,
+			Payload:   deploykit.ServiceDeletedPayload{ServiceID: serviceID},
+		})
+	}
+
 	if s.Reconciler != nil {
 		s.Reconciler.Trigger()
 	}
