@@ -17,7 +17,19 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { Plus } from "lucide-react";
+import { Plus, ArrowUpRight } from "lucide-react";
+
+function gradientFromSlug(slug: string): { from: string; to: string } {
+  let hash = 0;
+  for (let i = 0; i < slug.length; i++) {
+    hash = (hash * 31 + slug.charCodeAt(i)) | 0;
+  }
+  const hue = Math.abs(hash) % 360;
+  return {
+    from: `hsl(${hue}, 70%, 58%)`,
+    to: `hsl(${(hue + 45) % 360}, 70%, 46%)`,
+  };
+}
 
 function timeAgo(dateStr: string): string {
   const seconds = Math.floor(
@@ -82,35 +94,43 @@ function ProjectsList() {
           </div>
         </button>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {projects.map((p) => (
-            <Link key={p.id} to={`/projects/${p.id}`} className="group/link">
-              <Card className="gap-0 rounded-lg p-0 transition-colors duration-200 hover:ring-primary/50">
-                <div className="px-5 pt-4 pb-3">
-                  <p className="text-base font-semibold">{p.name}</p>
-                </div>
-                <div className="mx-4 rounded-lg bg-muted/50 dark:bg-muted/30">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {projects.map((p) => {
+            const { from, to } = gradientFromSlug(p.slug);
+            return (
+              <Link key={p.id} to={`/projects/${p.id}`} className="group">
+                <Card className="relative gap-0 overflow-hidden p-0 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-md group-hover:ring-primary/40">
                   <div
-                    className="h-32 rounded-lg opacity-[0.03] dark:opacity-[0.06]"
+                    className="relative h-20"
                     style={{
-                      backgroundImage:
-                        "radial-gradient(circle, currentColor 1px, transparent 1px)",
-                      backgroundSize: "16px 16px",
+                      background: `linear-gradient(135deg, ${from}, ${to})`,
                     }}
-                  />
-                </div>
-                <div className="flex items-center gap-2 px-5 py-4 text-xs text-muted-foreground">
-                  <span className="relative flex size-2">
-                    <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                    <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
-                  </span>
-                  <span className="font-mono">{p.slug}</span>
-                  <span>&middot;</span>
-                  <span>{timeAgo(p.created_at)}</span>
-                </div>
-              </Card>
-            </Link>
-          ))}
+                  >
+                    <div
+                      className="absolute inset-0 opacity-15"
+                      style={{
+                        backgroundImage:
+                          "radial-gradient(circle at 1px 1px, white 1px, transparent 0)",
+                        backgroundSize: "14px 14px",
+                      }}
+                    />
+                    <ArrowUpRight className="absolute right-3 top-3 size-4 text-white/70 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-white" />
+                  </div>
+                  <div className="absolute left-4 top-[58px] flex size-11 items-center justify-center rounded-full bg-card text-base font-semibold ring-1 ring-border">
+                    {p.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="px-5 pt-8 pb-4">
+                    <p className="truncate text-base font-semibold">{p.name}</p>
+                    <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span className="truncate font-mono">{p.slug}</span>
+                      <span aria-hidden>·</span>
+                      <span className="shrink-0">{timeAgo(p.created_at)}</span>
+                    </div>
+                  </div>
+                </Card>
+              </Link>
+            );
+          })}
         </div>
       )}
     </DashboardLayout>

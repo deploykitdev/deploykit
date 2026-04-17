@@ -44,6 +44,7 @@ export interface Service {
   project_id: string;
   name: string;
   status: string;
+  icon_url: string | null;
   active_deployment_id: string | null;
   created_at: string;
   updated_at: string;
@@ -120,6 +121,8 @@ export interface SystemStatus {
 export const queryKeys = {
   projects: ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
+  projectServices: (projectId: string) =>
+    ["projects", projectId, "services"] as const,
   service: (projectId: string, serviceId: string) =>
     ["projects", projectId, "services", serviceId] as const,
   deployments: (projectId: string, serviceId: string) =>
@@ -144,6 +147,21 @@ export function useProject(id: string) {
   });
 }
 
+export function useProjectServices(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.projectServices(projectId),
+    queryFn: () =>
+      api<{ data: Service[]; total_count: number }>(
+        `/projects/${projectId}/services?limit=100`,
+      ).then((r) => r.data ?? []),
+    refetchInterval: (query) => {
+      const services = query.state.data;
+      if (!services) return false;
+      return services.some((s) => s.status === "deploying") ? 5000 : false;
+    },
+  });
+}
+
 export function useService(projectId: string, serviceId: string | null) {
   return useQuery({
     queryKey: serviceId
@@ -152,6 +170,31 @@ export function useService(projectId: string, serviceId: string | null) {
     queryFn: () =>
       api<Service>(`/projects/${projectId}/services/${serviceId}`),
     enabled: !!serviceId,
+    refetchInterval: (query) => {
+      const s = query.state.data?.status;
+      return s === "deploying" ? 2000 : false;
+    },
+  });
+}
+
+export interface ServiceUpdate {
+  name?: string;
+  // Empty string clears the stored icon (backend stores NULL).
+  icon_url?: string;
+}
+
+export function useUpdateService(projectId: string, serviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (update: ServiceUpdate) =>
+      api<Service>(`/projects/${projectId}/services/${serviceId}`, {
+        method: "PATCH",
+        body: JSON.stringify(update),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.service(projectId, serviceId) });
+      qc.invalidateQueries({ queryKey: queryKeys.projectServices(projectId) });
+    },
   });
 }
 

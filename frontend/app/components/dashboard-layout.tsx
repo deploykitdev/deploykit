@@ -31,7 +31,7 @@ export function DashboardLayout({ children, fluid }: { children: ReactNode; flui
       </header>
       <div className={`border m-1.5 mt-0 rounded-xl bg-slate-50 dark:bg-background flex-1${fluid ? " flex flex-col overflow-hidden" : ""}`}>
         {fluid ? children : (
-          <main className="mx-auto max-w-5xl px-6 py-8">
+          <main className="mx-auto max-w-7xl px-6 py-8">
             {children}
           </main>
         )}

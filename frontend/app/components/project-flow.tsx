@@ -9,7 +9,9 @@ import {
   type NodeChange,
 } from "@xyflow/react";
 import { toast } from "sonner";
+import { useQueryClient } from "@tanstack/react-query";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
+import { useProjectServices, queryKeys, type Service } from "@/lib/queries";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
 import { CanvasContextMenu } from "./canvas-context-menu";
@@ -62,6 +64,31 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     moveLocalDraft,
     deleteNode,
   } = useCanvasSync(projectId);
+
+  const { data: servicesData } = useProjectServices(projectId);
+  const servicesById = useMemo(() => {
+    const map = new Map<string, Service>();
+    for (const s of servicesData ?? []) map.set(s.id, s);
+    return map;
+  }, [servicesData]);
+
+  // The canvas WebSocket drives create/delete of service nodes. Invalidate the
+  // REST services list whenever the set of service ids on the canvas shifts,
+  // so status/image info stays in sync without a dedicated WS message.
+  const qc = useQueryClient();
+  const serviceIdsKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const n of nodes) {
+      if (n.type !== "service") continue;
+      const id = (n.data as ServiceNodeData | undefined)?.serviceId;
+      if (id) ids.push(id);
+    }
+    ids.sort();
+    return ids.join(",");
+  }, [nodes]);
+  useEffect(() => {
+    qc.invalidateQueries({ queryKey: queryKeys.projectServices(projectId) });
+  }, [qc, projectId, serviceIdsKey]);
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -205,8 +232,39 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     openServiceDraft(menu.flowX, menu.flowY);
   }, [menu, openServiceDraft]);
 
+  const decoratedNodes = useMemo<Node[]>(() => {
+    if (servicesById.size === 0) return nodes;
+    return nodes.map((n) => {
+      if (n.type !== "service") return n;
+      const data = n.data as ServiceNodeData | undefined;
+      const serviceId = data?.serviceId;
+      if (!serviceId) return n;
+      const svc = servicesById.get(serviceId);
+      if (!svc) return n;
+      const nextStatus = svc.status;
+      const nextImage = svc.active_deployment?.image;
+      const nextIconUrl = svc.icon_url ?? undefined;
+      if (
+        data?.status === nextStatus &&
+        data?.image === nextImage &&
+        data?.iconUrl === nextIconUrl
+      ) {
+        return n;
+      }
+      return {
+        ...n,
+        data: {
+          ...data,
+          status: nextStatus,
+          image: nextImage,
+          iconUrl: nextIconUrl,
+        },
+      };
+    });
+  }, [nodes, servicesById]);
+
   const composedNodes = useMemo<Node[]>(() => {
-    if (remoteDrafts.size === 0 && localDrafts.size === 0) return nodes;
+    if (remoteDrafts.size === 0 && localDrafts.size === 0) return decoratedNodes;
     const extras: Node[] = [];
     for (const [, draft] of remoteDrafts) {
       extras.push({
@@ -240,8 +298,8 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         style: { width: DRAFT_NODE_WIDTH, height: DRAFT_NODE_HEIGHT },
       });
     }
-    return [...nodes, ...extras];
-  }, [nodes, remoteDrafts, localDrafts, submitServiceDraft, cancelServiceDraft]);
+    return [...decoratedNodes, ...extras];
+  }, [decoratedNodes, remoteDrafts, localDrafts, submitServiceDraft, cancelServiceDraft]);
 
   // Surface disconnect + auto-reconnect attempts so users aren't left staring
   // at a canvas that has silently stopped syncing. Only fire the disconnect

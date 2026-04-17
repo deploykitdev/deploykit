@@ -160,6 +160,8 @@ type desiredContainer struct {
 
 func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploykit.Project) {
 	desired := map[containerKey]desiredContainer{}
+	desiredByService := map[string]int{}
+	servicesByID := map[string]*deploykit.Service{}
 
 	for _, p := range projects {
 		services, err := r.allServices(ctx, p.ID)
@@ -168,6 +170,7 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 			continue
 		}
 		for _, svc := range services {
+			servicesByID[svc.ID] = svc
 			if svc.Status == deploykit.ServiceStatusStopped {
 				continue
 			}
@@ -184,6 +187,7 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 			if replicas <= 0 {
 				replicas = 1
 			}
+			desiredByService[svc.ID] = replicas
 			for i := 0; i < replicas; i++ {
 				key := containerKey{serviceID: svc.ID, deploymentID: dep.ID, replicaIndex: i}
 				desired[key] = desiredContainer{
@@ -229,6 +233,7 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 		r.deleteContainerRow(ctx, rc.DockerID)
 	}
 
+	createdByService := map[string]int{}
 	for key, dc := range desired {
 		if _, ok := actualByKey[key]; ok {
 			continue
@@ -252,6 +257,57 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 		}); err != nil {
 			r.logger.Error("failed to record container",
 				"docker_id", dockerID, "service_id", dc.service.ID, "err", err)
+			continue
+		}
+		createdByService[dc.service.ID]++
+	}
+
+	r.reconcileServiceStatuses(ctx, servicesByID, desired, actualByKey, desiredByService, createdByService)
+}
+
+// reconcileServiceStatuses transitions each service's status to reflect how
+// many desired containers are actually present after the create/remove pass.
+func (r *Reconciler) reconcileServiceStatuses(
+	ctx context.Context,
+	servicesByID map[string]*deploykit.Service,
+	desired map[containerKey]desiredContainer,
+	actualByKey map[containerKey]deploykit.RunningContainer,
+	desiredByService map[string]int,
+	createdByService map[string]int,
+) {
+	actualByService := map[string]int{}
+	for key := range actualByKey {
+		if _, ok := desired[key]; ok {
+			actualByService[key.serviceID]++
+		}
+	}
+
+	for svcID, want := range desiredByService {
+		svc := servicesByID[svcID]
+		if svc == nil {
+			continue
+		}
+		have := actualByService[svcID] + createdByService[svcID]
+
+		var target string
+		switch {
+		case have == want && want > 0:
+			target = deploykit.ServiceStatusRunning
+		case have > 0 && have < want:
+			target = deploykit.ServiceStatusDegraded
+		case have == 0 && want > 0:
+			target = deploykit.ServiceStatusDeploying
+		default:
+			continue
+		}
+
+		if svc.Status == target {
+			continue
+		}
+
+		if err := r.services.SetServiceStatus(ctx, svcID, target); err != nil {
+			r.logger.Error("failed to update service status",
+				"service_id", svcID, "status", target, "err", err)
 		}
 	}
 }

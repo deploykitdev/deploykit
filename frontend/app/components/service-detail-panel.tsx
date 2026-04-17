@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Panel } from "@xyflow/react";
-import { BoxIcon, XIcon } from "lucide-react";
+import { XIcon } from "lucide-react";
 import { Tabs, TabList, Tab, TabPanel } from "./ui/tabs";
 import { useService, useDeployments } from "@/lib/queries";
 import { ServiceDeploymentsTab } from "./service-deployments-tab";
@@ -8,6 +8,7 @@ import { ServiceVariablesTab } from "./service-variables-tab";
 import { ServiceMetricsTab } from "./service-metrics-tab";
 import { ServiceSettingsTab } from "./service-settings-tab";
 import { ServiceLogsTab } from "./service-logs-tab";
+import { ServiceIconEditor } from "./service-icon-editor";
 
 interface ServiceDetailPanelProps {
   projectId: string;
@@ -44,7 +45,11 @@ export function ServiceDetailPanel({
     >
       <div className="flex items-center justify-between gap-3 border-b px-5 py-4">
         <div className="flex items-center gap-2.5 min-w-0">
-          <BoxIcon className="size-5 text-muted-foreground shrink-0" />
+          <ServiceIconEditor
+            projectId={projectId}
+            serviceId={serviceId}
+            iconUrl={service?.icon_url ?? null}
+          />
           <h2 className="truncate text-lg font-semibold">{name}</h2>
         </div>
         <button
@@ -92,6 +97,7 @@ export function ServiceDetailPanel({
               projectId={projectId}
               serviceId={serviceId}
               active={tab === "logs"}
+              status={service?.status}
             />
           </TabPanel>
           <TabPanel value="variables" className="h-full overflow-y-auto p-5">

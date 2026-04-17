@@ -133,3 +133,9 @@
     @apply font-sans;
     }
 }
+
+@keyframes service-node-scan {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  40%  { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}

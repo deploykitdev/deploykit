@@ -7,6 +7,7 @@ interface ServiceLogsTabProps {
   projectId: string;
   serviceId: string;
   active: boolean;
+  status?: string;
 }
 
 const CONTAINER_COLORS = [
@@ -26,9 +27,10 @@ function colorFor(containerId: string): string {
   return CONTAINER_COLORS[h % CONTAINER_COLORS.length];
 }
 
-export function ServiceLogsTab({ projectId, serviceId, active }: ServiceLogsTabProps) {
+export function ServiceLogsTab({ projectId, serviceId, active, status: serviceStatus }: ServiceLogsTabProps) {
   const [paused, setPaused] = useState(false);
-  const enabled = active && !paused;
+  const isReady = serviceStatus === "running" || serviceStatus === "degraded";
+  const enabled = active && !paused && isReady;
 
   const { items, status, error, clear, reconnect } = useLogStream(
     projectId,
@@ -91,7 +93,12 @@ export function ServiceLogsTab({ projectId, serviceId, active }: ServiceLogsTabP
           className="h-full overflow-y-auto px-4 py-3 font-mono text-xs leading-relaxed"
         >
           {items.length === 0 ? (
-            <EmptyState status={status} error={error} onReconnect={reconnect} />
+            <EmptyState
+              status={status}
+              serviceStatus={serviceStatus}
+              error={error}
+              onReconnect={reconnect}
+            />
           ) : (
             items.map((item) => <LogRow key={item.id} item={item} />)
           )}
@@ -170,13 +177,50 @@ function Badge({ color, label, pulse }: { color: string; label: string; pulse?: 
 
 function EmptyState({
   status,
+  serviceStatus,
   error,
   onReconnect,
 }: {
   status: LogStreamStatus;
+  serviceStatus?: string;
   error: string | null;
   onReconnect: () => void;
 }) {
+  if (serviceStatus === "deploying") {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-neutral-400">
+        <span className="inline-block size-2 animate-pulse rounded-full bg-amber-500" />
+        <p className="text-sm">Deploying…</p>
+        <p className="max-w-xs text-xs text-neutral-500">
+          Logs will appear once the container is running.
+        </p>
+      </div>
+    );
+  }
+  if (serviceStatus === "created") {
+    return (
+      <div className="flex h-full items-center justify-center text-neutral-500">
+        <p className="text-xs">Deploy a service to view logs.</p>
+      </div>
+    );
+  }
+  if (serviceStatus === "stopped") {
+    return (
+      <div className="flex h-full items-center justify-center text-neutral-500">
+        <p className="text-xs">Service stopped.</p>
+      </div>
+    );
+  }
+  if (serviceStatus === "failed") {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-neutral-400">
+        <p className="text-sm">Service failed to start.</p>
+        <p className="max-w-xs text-xs text-neutral-500">
+          Check the Deployments tab for details.
+        </p>
+      </div>
+    );
+  }
   if (status === "error") {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-neutral-400">

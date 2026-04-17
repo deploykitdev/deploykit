@@ -1,13 +1,5 @@
-import { useReactFlow, useStore } from "@xyflow/react";
-import {
-  GridIcon,
-  PlusIcon,
-  MinusIcon,
-  Minimize2Icon,
-  Undo2Icon,
-  Redo2Icon,
-  LayersIcon,
-} from "lucide-react";
+import { useReactFlow } from "@xyflow/react";
+import { PlusIcon, MinusIcon, Minimize2Icon } from "lucide-react";
 
 const btnClass =
   "flex size-9 items-center justify-center text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground";
@@ -20,14 +12,6 @@ export function CanvasControls() {
 
   return (
     <div className="absolute bottom-4 left-4 z-10 flex flex-col gap-2">
-      {/* Grid / add menu */}
-      <div className={groupClass}>
-        <button className={`${btnClass} rounded-lg`} title="Add">
-          <GridIcon className="size-4" />
-        </button>
-      </div>
-
-      {/* Zoom controls */}
       <div className={groupClass}>
         <button
           onClick={() => zoomIn()}
@@ -49,23 +33,6 @@ export function CanvasControls() {
           title="Fit to view"
         >
           <Minimize2Icon className="size-4" />
-        </button>
-      </div>
-
-      {/* Undo / Redo */}
-      <div className={groupClass}>
-        <button className={`${btnClass} rounded-t-lg`} title="Undo">
-          <Undo2Icon className="size-4" />
-        </button>
-        <button className={`${btnClass} rounded-b-lg`} title="Redo">
-          <Redo2Icon className="size-4" />
-        </button>
-      </div>
-
-      {/* Layers */}
-      <div className={groupClass}>
-        <button className={`${btnClass} rounded-lg`} title="Layers">
-          <LayersIcon className="size-4" />
         </button>
       </div>
     </div>
