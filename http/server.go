@@ -46,6 +46,7 @@ type Server struct {
 	ContainerService  deploykit.ContainerService
 	CanvasService     deploykit.CanvasService
 	SystemService     deploykit.SystemService
+	EnvVarService     deploykit.EnvVarService
 
 	// LogStreamer streams logs from a container runtime (Docker, Podman, …)
 	// for endpoints like /logs that can't be expressed through the domain
@@ -144,6 +145,16 @@ func (s *Server) registerRoutes() {
 
 	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/containers", s.handleListContainers)
 	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/logs", s.handleStreamServiceLogs)
+
+	protected.HandleFunc("POST /projects/{projectId}/env-vars", s.handleCreateProjectEnvVar)
+	protected.HandleFunc("GET /projects/{projectId}/env-vars", s.handleListProjectEnvVars)
+	protected.HandleFunc("PATCH /projects/{projectId}/env-vars/{envVarId}", s.handleUpdateProjectEnvVar)
+	protected.HandleFunc("DELETE /projects/{projectId}/env-vars/{envVarId}", s.handleDeleteProjectEnvVar)
+
+	protected.HandleFunc("POST /projects/{projectId}/services/{serviceId}/env-vars", s.handleCreateServiceEnvVar)
+	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/env-vars", s.handleListServiceEnvVars)
+	protected.HandleFunc("PATCH /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleUpdateServiceEnvVar)
+	protected.HandleFunc("DELETE /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleDeleteServiceEnvVar)
 
 	adminOnly := s.requireRole(deploykit.RoleAdmin)
 	protected.Handle("POST /users", adminOnly(http.HandlerFunc(s.handleCreateUser)))

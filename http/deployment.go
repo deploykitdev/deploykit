@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"maps"
 	"net/http"
 
 	"github.com/heyjorgedev/deploykit"
@@ -15,6 +16,16 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+
+	// Merge project + service env vars under any deploy-time overrides in the
+	// request. Request values win so callers can pin canary flags per deploy.
+	resolved, err := s.EnvVarService.ResolveForService(r.Context(), serviceID)
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+	maps.Copy(resolved, req.EnvVars)
+	req.EnvVars = resolved
 
 	deployment, err := s.DeploymentService.CreateDeployment(r.Context(), serviceID, req)
 	if err != nil {

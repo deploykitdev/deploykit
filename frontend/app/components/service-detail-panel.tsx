@@ -101,7 +101,7 @@ export function ServiceDetailPanel({
             />
           </TabPanel>
           <TabPanel value="variables" className="h-full overflow-y-auto p-5">
-            <ServiceVariablesTab />
+            <ServiceVariablesTab projectId={projectId} serviceId={serviceId} />
           </TabPanel>
           <TabPanel value="metrics" className="h-full overflow-y-auto p-5">
             <ServiceMetricsTab />

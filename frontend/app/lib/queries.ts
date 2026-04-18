@@ -118,6 +118,16 @@ export interface SystemStatus {
   };
 }
 
+export interface EnvVar {
+  id: string;
+  scope: "project" | "service";
+  scope_id: string;
+  key: string;
+  value: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export const queryKeys = {
   projects: ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
@@ -127,6 +137,10 @@ export const queryKeys = {
     ["projects", projectId, "services", serviceId] as const,
   deployments: (projectId: string, serviceId: string) =>
     ["projects", projectId, "services", serviceId, "deployments"] as const,
+  projectEnvVars: (projectId: string) =>
+    ["projects", projectId, "env-vars"] as const,
+  serviceEnvVars: (projectId: string, serviceId: string) =>
+    ["projects", projectId, "services", serviceId, "env-vars"] as const,
   users: ["users"] as const,
   systemAbout: ["system", "about"] as const,
   systemStatus: ["system", "status"] as const,
@@ -305,6 +319,150 @@ export function useDeleteUser() {
       api(`/users/${id}`, { method: "DELETE" }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.users });
+    },
+  });
+}
+
+// --- Env vars ---
+
+// Invalidates every "deployments" query under a project. Env var mutations
+// cause the backend to create new deployments for the affected services, so
+// any open deployments list in the UI needs a refresh.
+function invalidateProjectDeployments(
+  qc: ReturnType<typeof useQueryClient>,
+  projectId: string,
+) {
+  qc.invalidateQueries({
+    predicate: (q) => {
+      const key = q.queryKey;
+      return (
+        Array.isArray(key) &&
+        key[0] === "projects" &&
+        key[1] === projectId &&
+        key[2] === "services" &&
+        key[4] === "deployments"
+      );
+    },
+  });
+}
+
+export function useProjectEnvVars(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.projectEnvVars(projectId),
+    queryFn: () =>
+      api<{ data: EnvVar[] }>(`/projects/${projectId}/env-vars`).then(
+        (r) => r.data ?? [],
+      ),
+  });
+}
+
+export function useCreateProjectEnvVar(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { key: string; value: string }) =>
+      api<EnvVar>(`/projects/${projectId}/env-vars`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
+      invalidateProjectDeployments(qc, projectId);
+    },
+  });
+}
+
+export function useUpdateProjectEnvVar(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }) =>
+      api<EnvVar>(`/projects/${projectId}/env-vars/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ value }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
+      invalidateProjectDeployments(qc, projectId);
+    },
+  });
+}
+
+export function useDeleteProjectEnvVar(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api(`/projects/${projectId}/env-vars/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
+      invalidateProjectDeployments(qc, projectId);
+    },
+  });
+}
+
+export function useServiceEnvVars(projectId: string, serviceId: string) {
+  return useQuery({
+    queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
+    queryFn: () =>
+      api<{ data: EnvVar[] }>(
+        `/projects/${projectId}/services/${serviceId}/env-vars`,
+      ).then((r) => r.data ?? []),
+  });
+}
+
+export function useCreateServiceEnvVar(projectId: string, serviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { key: string; value: string }) =>
+      api<EnvVar>(`/projects/${projectId}/services/${serviceId}/env-vars`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
+      });
+      qc.invalidateQueries({
+        queryKey: queryKeys.deployments(projectId, serviceId),
+      });
+    },
+  });
+}
+
+export function useUpdateServiceEnvVar(projectId: string, serviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }) =>
+      api<EnvVar>(
+        `/projects/${projectId}/services/${serviceId}/env-vars/${id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ value }),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
+      });
+      qc.invalidateQueries({
+        queryKey: queryKeys.deployments(projectId, serviceId),
+      });
+    },
+  });
+}
+
+export function useDeleteServiceEnvVar(projectId: string, serviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api(`/projects/${projectId}/services/${serviceId}/env-vars/${id}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({
+        queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
+      });
+      qc.invalidateQueries({
+        queryKey: queryKeys.deployments(projectId, serviceId),
+      });
     },
   });
 }

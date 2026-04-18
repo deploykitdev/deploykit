@@ -88,11 +88,10 @@ export function ServiceNode({ data, selected }: NodeProps) {
     <div
       className={cn(
         "group relative w-80 overflow-hidden rounded-xl border bg-card text-card-foreground",
-        "shadow-md transition-[transform,border-color,box-shadow] duration-200 ease-out",
-        "hover:-translate-y-px hover:shadow-lg",
+        "shadow-md transition-[border-color,box-shadow] duration-200 ease-out",
         selected
           ? "border-primary/70 ring-[3px] ring-primary/15"
-          : "border-border/80 hover:border-foreground/25",
+          : "border-border/80",
       )}
     >
       <div
@@ -134,20 +133,20 @@ export function ServiceNode({ data, selected }: NodeProps) {
       />
 
       <div className="relative px-5 pt-4 pb-4">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[10px] font-medium uppercase tracking-[0.22em] text-muted-foreground/70">
-            Service
-          </span>
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="truncate text-xl font-semibold leading-tight tracking-tight">
+            {label}
+          </h3>
           {showCustomIcon ? (
             <img
               src={iconUrl}
               alt=""
-              className="size-7 object-contain"
+              className="size-7 shrink-0 object-contain"
               onError={() => setIconBroken(true)}
               draggable={false}
             />
           ) : (
-            <div className="grid size-9 place-items-center rounded-md border border-border/80 bg-background/60 shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]">
+            <div className="grid size-9 shrink-0 place-items-center rounded-md border border-border/80 bg-background/60 shadow-[inset_0_1px_0_rgb(255_255_255/0.04)]">
               <Container
                 className="size-5 text-muted-foreground"
                 strokeWidth={1.75}
@@ -156,13 +155,9 @@ export function ServiceNode({ data, selected }: NodeProps) {
           )}
         </div>
 
-        <h3 className="mt-3 truncate text-xl font-semibold leading-tight tracking-tight">
-          {label}
-        </h3>
-
         <code
           className={cn(
-            "mt-4 block truncate font-mono text-xs leading-[1.35]",
+            "mt-3 block truncate font-mono text-xs leading-[1.35]",
             image
               ? "text-muted-foreground/70"
               : "italic text-muted-foreground/45",
