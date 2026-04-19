@@ -6,6 +6,7 @@ import {
   useService,
   useUpdateService,
 } from "@/lib/queries";
+import { collectServiceOverride } from "@/lib/pending-changes-diff";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Field, FieldError, FieldLabel } from "./ui/field";
@@ -33,21 +34,11 @@ export function ServiceSettingsTab({
 
   // The effective name is the applied name with the latest staged rename
   // layered on top. Staging another rename to the same value is a no-op.
-  const pendingName = useMemo(() => {
-    if (!pendingChanges) return undefined;
-    let latest: string | undefined;
-    for (const c of pendingChanges) {
-      if (c.op !== "service.update" || c.target_id !== serviceId) continue;
-      const p = c.payload;
-      if (p && typeof p === "object" && "name" in p) {
-        const v = (p as { name?: unknown }).name;
-        if (typeof v === "string") latest = v;
-      }
-    }
-    return latest;
-  }, [pendingChanges, serviceId]);
-
-  const effectiveName = pendingName ?? service?.name ?? "";
+  const override = useMemo(
+    () => collectServiceOverride(pendingChanges, serviceId),
+    [pendingChanges, serviceId],
+  );
+  const effectiveName = override?.name ?? service?.name ?? "";
   const [name, setName] = useState(effectiveName);
   const [error, setError] = useState("");
 

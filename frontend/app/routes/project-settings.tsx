@@ -7,8 +7,10 @@ import { ApiError } from "../lib/api";
 import {
   useCreateProjectEnvVar,
   useDeleteProjectEnvVar,
+  usePendingChanges,
   useProject,
   useProjectEnvVars,
+  useRemovePendingChange,
   useUpdateProject,
   useUpdateProjectEnvVar,
   type Project,
@@ -36,9 +38,11 @@ function ProjectSettings() {
   const [tab, setTab] = useState<SettingsTab>("general");
 
   const envVarsQuery = useProjectEnvVars(id);
+  const pendingChangesQuery = usePendingChanges(id);
   const create = useCreateProjectEnvVar(id);
   const update = useUpdateProjectEnvVar(id);
   const del = useDeleteProjectEnvVar(id);
+  const removePending = useRemovePendingChange(id);
 
   if (isLoading) {
     return (
@@ -101,9 +105,15 @@ function ProjectSettings() {
               onDelete={(envVarId) =>
                 del.mutateAsync(envVarId).then(() => undefined)
               }
+              pendingChanges={pendingChangesQuery.data}
+              onCancelPending={(changeId) =>
+                removePending.mutateAsync(changeId).then(() => undefined)
+              }
+              scope="project"
+              scopeId={id}
               title="Project variables"
               description="Shared by every service in this project. Services override keys by setting them locally."
-              redeployMessage="All services in this project will be redeployed."
+              helperText="The deletion will be staged; deploy the project to apply it."
             />
           )}
         </section>

@@ -14,7 +14,6 @@ import {
   useDiscardPendingChanges,
   usePendingChanges,
   useProject,
-  useProjectEnvVars,
   useProjectServices,
 } from "@/lib/queries";
 import {
@@ -31,7 +30,6 @@ export function PendingChangesPanel({ projectId }: PendingChangesPanelProps) {
   const { data: changes } = usePendingChanges(projectId);
   const { data: project } = useProject(projectId);
   const { data: services } = useProjectServices(projectId);
-  const { data: projectEnvVars } = useProjectEnvVars(projectId);
   const discard = useDiscardPendingChanges(projectId);
   const deploy = useDeployProject(projectId);
   const [expanded, setExpanded] = useState(false);
@@ -42,14 +40,8 @@ export function PendingChangesPanel({ projectId }: PendingChangesPanelProps) {
       changes,
       project: project ? { id: project.id, name: project.name } : null,
       services: services ?? [],
-      projectEnvVars: projectEnvVars ?? [],
-      // Service-scoped env vars across all services would require fan-out
-      // fetches; the compactor falls back gracefully when the record is
-      // missing and env_var.update entries will show the new value without
-      // a "before" fallback. Good enough for v1.
-      serviceEnvVars: {},
     });
-  }, [changes, project, services, projectEnvVars]);
+  }, [changes, project, services]);
 
   if (!changes || changes.length === 0) return null;
 

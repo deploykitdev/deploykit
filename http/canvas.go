@@ -104,13 +104,11 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Send the current pending change log so the client shows the bottom panel.
-	if s.PendingChangeService != nil {
-		changes, err := s.PendingChangeService.List(r.Context(), projectID)
-		if err != nil {
-			s.logger.Error("loading pending changes", "err", err, "project_id", projectID)
-		} else if err := client.sendPendingChanges(changes); err != nil {
-			s.logger.Error("sending pending changes", "err", err)
-		}
+	changes, err := s.PendingChangeService.List(r.Context(), projectID)
+	if err != nil {
+		s.logger.Error("loading pending changes", "err", err, "project_id", projectID)
+	} else if err := client.sendPendingChanges(changes); err != nil {
+		s.logger.Error("sending pending changes", "err", err)
 	}
 
 	s.logger.Info("canvas client connected",
@@ -446,13 +444,9 @@ func (c *canvasClient) handleNodeDelete(ctx context.Context, payload json.RawMes
 		c.sendError("Failed to delete node.")
 		return
 	}
-	var removedChangeIDs []string
-	if c.pendingChangeService != nil {
-		ids, err := c.pendingChangeService.RemoveByTempID(ctx, c.projectID, req.ID)
-		if err != nil {
-			c.logger.Error("removing pending changes for temp id", "err", err, "temp_id", req.ID)
-		}
-		removedChangeIDs = ids
+	removedChangeIDs, err := c.pendingChangeService.RemoveByTempID(ctx, c.projectID, req.ID)
+	if err != nil {
+		c.logger.Error("removing pending changes for temp id", "err", err, "temp_id", req.ID)
 	}
 
 	response, _ := json.Marshal(map[string]string{"id": req.ID})

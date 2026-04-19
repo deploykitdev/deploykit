@@ -9,6 +9,7 @@ import {
   useRemovePendingChange,
   type PendingChange,
 } from "@/lib/queries";
+import { parsePayload } from "@/lib/pending-changes-diff";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -296,7 +297,7 @@ function extractPendingService(
   );
   if (!create) return null;
 
-  const payload = parseObject(create.payload);
+  const payload = parsePayload(create.payload);
   const name = typeof payload.name === "string" ? payload.name : "(unnamed)";
   const image = typeof payload.image === "string" ? payload.image : "";
 
@@ -321,7 +322,7 @@ function extractPendingService(
   // Env vars staged later under this temp id — these can be removed.
   for (const c of changes) {
     if (c.op !== "env_var.create" || c.parent_temp_id !== tempId) continue;
-    const p = parseObject(c.payload);
+    const p = parsePayload(c.payload);
     const key = typeof p.key === "string" ? p.key : null;
     if (!key) continue;
     merged.set(key, {
@@ -337,18 +338,6 @@ function extractPendingService(
     envVars: Array.from(merged.values()),
     inlineEnvVars: inlineKeys,
   };
-}
-
-function parseObject(raw: unknown): Record<string, unknown> {
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return {};
-    }
-  }
-  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
-  return {};
 }
 
 function extractMessage(err: unknown, fallback: string): string {

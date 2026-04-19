@@ -118,9 +118,11 @@ export interface SystemStatus {
   };
 }
 
+export type EnvVarScope = "project" | "service";
+
 export interface EnvVar {
   id: string;
-  scope: "project" | "service";
+  scope: EnvVarScope;
   scope_id: string;
   key: string;
   value: string;
@@ -230,19 +232,6 @@ export function useUpdateService(projectId: string, serviceId: string) {
       api<PendingChange>(`/projects/${projectId}/services/${serviceId}`, {
         method: "PATCH",
         body: JSON.stringify(update),
-      }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
-    },
-  });
-}
-
-export function useDeleteService(projectId: string, serviceId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: () =>
-      api<PendingChange>(`/projects/${projectId}/services/${serviceId}`, {
-        method: "DELETE",
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });

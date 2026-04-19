@@ -494,13 +494,17 @@ func (s *PendingChangeService) applyEntry(
 		if e.ParentTempID != nil {
 			real, ok := result.TempIDToServiceID[*e.ParentTempID]
 			if !ok {
-				return fmt.Errorf("env_var.create references unknown parent temp id %s", *e.ParentTempID)
+				return deploykit.Errorf(
+					deploykit.EINVALID,
+					"Pending env var references a service (%s) that was never staged for creation.",
+					*e.ParentTempID,
+				)
 			}
 			scopeID = real
 		} else if e.TargetID != nil {
 			scopeID = *e.TargetID
 		} else {
-			return fmt.Errorf("env_var.create missing target or parent")
+			return deploykit.Errorf(deploykit.EINVALID, "Pending env var has no target.")
 		}
 		now := time.Now().UTC().Format(timeFormat)
 		if _, err := tx.ExecContext(ctx,

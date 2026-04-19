@@ -420,4 +420,204 @@ func TestPendingChangeService_RemoveByTempID(t *testing.T) {
 	}
 }
 
+func TestPendingChangeService_Apply_ServiceUpdate(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+	service, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "api"})
+
+	payload, _ := json.Marshal(deploykit.ServiceUpdatePayload{
+		Name:    strPtr("renamed"),
+		IconURL: strPtr("https://example.com/icon.png"),
+	})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceUpdate,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &service.ID,
+		Payload:    payload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := svc.Apply(ctx, proj.ID); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	got, err := svcSvc.GetService(ctx, service.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "renamed" {
+		t.Errorf("name: got %q, want %q", got.Name, "renamed")
+	}
+	if got.IconURL == nil || *got.IconURL != "https://example.com/icon.png" {
+		t.Errorf("icon: got %v", got.IconURL)
+	}
+}
+
+func TestPendingChangeService_Apply_EnvVarDeleteRedeploys(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	envSvc := sqlite.NewEnvVarService(db)
+	depSvc := sqlite.NewDeploymentService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+	service, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "api"})
+	if _, err := depSvc.CreateDeployment(ctx, service.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+	ev, _ := envSvc.CreateEnvVar(ctx, deploykit.EnvVarScopeService, service.ID, deploykit.EnvVarCreate{
+		Key: "FOO", Value: "bar",
+	})
+
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarDelete,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &ev.ID,
+		Payload:    json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Apply(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if len(res.RedeployedServiceIDs) != 1 || res.RedeployedServiceIDs[0] != service.ID {
+		t.Errorf("redeployed: %+v", res.RedeployedServiceIDs)
+	}
+	if _, err := envSvc.GetEnvVar(ctx, ev.ID); deploykit.ErrorCode(err) != deploykit.ENOTFOUND {
+		t.Errorf("env var still present: %v", err)
+	}
+}
+
+func TestPendingChangeService_Apply_ProjectEnvVarFanOut(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	depSvc := sqlite.NewDeploymentService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+	// Two deployed services + one service with no active deployment. Only the
+	// two deployed services should be redeployed when a project env var changes.
+	a, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "a"})
+	b, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "b"})
+	c, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "c"})
+	if _, err := depSvc.CreateDeployment(ctx, a.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := depSvc.CreateDeployment(ctx, b.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	projID := proj.ID
+	payload, _ := json.Marshal(deploykit.EnvVarCreatePayload{
+		Scope: deploykit.EnvVarScopeProject,
+		Key:   "SHARED",
+		Value: "1",
+	})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarCreate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &projID,
+		Payload:    payload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Apply(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got := map[string]bool{}
+	for _, id := range res.RedeployedServiceIDs {
+		got[id] = true
+	}
+	if !got[a.ID] || !got[b.ID] {
+		t.Errorf("a + b should be redeployed: got %+v", res.RedeployedServiceIDs)
+	}
+	if got[c.ID] {
+		t.Errorf("c has no active deployment but was redeployed")
+	}
+}
+
+func TestPendingChangeService_DiscardAll_CleansUpPendingCreatedNodes(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	canvasSvc := sqlite.NewCanvasService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+	// Pre-existing applied service node — should survive discard.
+	svcSvc := sqlite.NewServiceService(db)
+	existing, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "existing"})
+	if _, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID:        "node-existing",
+		Type:      deploykit.CanvasNodeTypeService,
+		Label:     "existing",
+		ServiceID: &existing.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pending-added service: canvas node + service.create entry.
+	tempID := "node-pending"
+	if _, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID:    tempID,
+		Type:  deploykit.CanvasNodeTypeService,
+		Label: "pending",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	createPayload, _ := json.Marshal(deploykit.ServiceCreatePayload{Name: "pending", Image: "nginx"})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:           deploykit.PendingOpServiceCreate,
+		TargetType:   deploykit.PendingTargetService,
+		TargetTempID: &tempID,
+		Payload:      createPayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A plain label node with no pending change — should also survive.
+	if _, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID:    "node-label",
+		Type:  deploykit.CanvasNodeTypeLabel,
+		Label: "notes",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := svc.DiscardAll(ctx, proj.ID); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+
+	nodes, _, err := canvasSvc.GetCanvasState(ctx, proj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]bool{}
+	for _, n := range nodes {
+		ids[n.ID] = true
+	}
+	if ids[tempID] {
+		t.Error("pending-added node not cleaned up")
+	}
+	if !ids["node-existing"] {
+		t.Error("existing applied node was wrongly deleted")
+	}
+	if !ids["node-label"] {
+		t.Error("plain label node was wrongly deleted")
+	}
+
+	list, _ := svc.List(ctx, proj.ID)
+	if len(list) != 0 {
+		t.Errorf("pending changes after discard: got %d, want 0", len(list))
+	}
+}
+
 func strPtr(s string) *string { return &s }

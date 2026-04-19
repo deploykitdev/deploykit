@@ -206,14 +206,29 @@ func (s *Server) handleDeletePendingChange(w http.ResponseWriter, r *http.Reques
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.ENOTFOUND, "Pending change not found."))
 		return
 	}
-	if !strings.HasPrefix(string(target.Op), "env_var.") &&
-		target.Op != deploykit.PendingOpProjectUpdate &&
-		target.Op != deploykit.PendingOpServiceUpdate {
-		// service.create cleanup is intertwined with the canvas node — route
-		// those deletions through the canvas node:delete WS message instead.
+	switch {
+	case target.Op == deploykit.PendingOpServiceCreate:
+		// Canvas-node lifecycle owns the service.create — removing just the
+		// log entry would orphan the visual placeholder.
 		s.errorResponse(w, r, deploykit.Errorf(
 			deploykit.EINVALID,
-			"This change can only be removed by discarding all or by deleting the node.",
+			"Delete the service's canvas node to cancel its creation.",
+		))
+		return
+	case target.Op == deploykit.PendingOpServiceDelete:
+		s.errorResponse(w, r, deploykit.Errorf(
+			deploykit.EINVALID,
+			"Discard all pending changes to cancel this service deletion.",
+		))
+		return
+	case strings.HasPrefix(string(target.Op), "env_var."),
+		target.Op == deploykit.PendingOpProjectUpdate,
+		target.Op == deploykit.PendingOpServiceUpdate:
+		// OK — safe to remove as a standalone entry.
+	default:
+		s.errorResponse(w, r, deploykit.Errorf(
+			deploykit.EINVALID,
+			"This change can't be removed individually; discard all pending changes instead.",
 		))
 		return
 	}

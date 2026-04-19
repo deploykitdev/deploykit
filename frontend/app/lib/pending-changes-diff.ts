@@ -1,4 +1,4 @@
-import type { EnvVar, PendingChange, Service } from "./queries";
+import type { PendingChange, Service } from "./queries";
 
 // Compacted view of the pending change log. Multiple edits targeting the
 // same resource are collapsed into a single line for display. The raw log
@@ -29,14 +29,11 @@ export interface CompactInput {
   changes: PendingChange[];
   project: { id: string; name: string } | null | undefined;
   services: Service[];
-  projectEnvVars: EnvVar[];
-  // Service-scoped env vars resolved for each known service. Keyed by service id.
-  serviceEnvVars: Record<string, EnvVar[]>;
 }
 
 type ParsedPayload = Record<string, unknown>;
 
-function parsePayload(raw: unknown): ParsedPayload {
+export function parsePayload(raw: unknown): ParsedPayload {
   if (typeof raw === "string") {
     try {
       return JSON.parse(raw);
@@ -50,17 +47,68 @@ function parsePayload(raw: unknown): ParsedPayload {
   return {};
 }
 
-// findEnvVar locates an env var by ID across both project and service scopes.
-function findEnvVar(id: string, input: CompactInput): EnvVar | undefined {
-  for (const ev of input.projectEnvVars) {
-    if (ev.id === id) return ev;
-  }
-  for (const list of Object.values(input.serviceEnvVars)) {
-    for (const ev of list) {
-      if (ev.id === id) return ev;
+// Per-service override distilled from the pending change log. `iconUrlSet`
+// being present (even with null) means an update was staged that explicitly
+// touched the icon — null means clear, string means set; undefined means no
+// staged icon change, so applied state should show.
+export interface ServiceOverride {
+  name?: string;
+  iconUrlSet?: string | null;
+  pendingDelete?: boolean;
+}
+
+// collectServiceOverrides walks the log once and produces per-service
+// rename / icon / pending-delete overrides, keyed by applied service ID.
+// Latest-write-wins for competing updates.
+export function collectServiceOverrides(
+  changes: PendingChange[] | undefined,
+): Map<string, ServiceOverride> {
+  const out = new Map<string, ServiceOverride>();
+  if (!changes) return out;
+  for (const c of changes) {
+    if (c.op === "service.update" && c.target_id) {
+      const payload = parsePayload(c.payload);
+      const existing = out.get(c.target_id) ?? {};
+      if (typeof payload.name === "string") existing.name = payload.name;
+      if ("icon_url" in payload) {
+        const raw = payload.icon_url;
+        existing.iconUrlSet =
+          typeof raw === "string" && raw !== "" ? raw : null;
+      }
+      out.set(c.target_id, existing);
+    } else if (c.op === "service.delete" && c.target_id) {
+      const existing = out.get(c.target_id) ?? {};
+      existing.pendingDelete = true;
+      out.set(c.target_id, existing);
     }
   }
-  return undefined;
+  return out;
+}
+
+// collectServiceOverride is the single-service variant used by side panels
+// that only care about one target.
+export function collectServiceOverride(
+  changes: PendingChange[] | undefined,
+  serviceId: string,
+): ServiceOverride | undefined {
+  if (!changes) return undefined;
+  let out: ServiceOverride | undefined;
+  for (const c of changes) {
+    if (c.target_id !== serviceId) continue;
+    if (c.op === "service.update") {
+      const payload = parsePayload(c.payload);
+      if (!out) out = {};
+      if (typeof payload.name === "string") out.name = payload.name;
+      if ("icon_url" in payload) {
+        const raw = payload.icon_url;
+        out.iconUrlSet = typeof raw === "string" && raw !== "" ? raw : null;
+      }
+    } else if (c.op === "service.delete") {
+      if (!out) out = {};
+      out.pendingDelete = true;
+    }
+  }
+  return out;
 }
 
 // compactChanges produces a per-target summary of the log, collapsing
@@ -215,42 +263,48 @@ export function compactChanges(input: CompactInput): CompactedChange[] {
       }
 
       case "env_var.update": {
-        if (!c.target_id) break;
-        const ev = findEnvVar(c.target_id, input);
-        if (!ev) break;
+        const key = typeof payload.key === "string" ? payload.key : "";
+        const scope = payload.scope;
+        const scopeID = typeof payload.scope_id === "string" ? payload.scope_id : "";
         const newValue = typeof payload.value === "string" ? payload.value : "";
-        if (ev.scope === "project") {
+        const oldValue =
+          typeof payload.old_value === "string" ? payload.old_value : null;
+        if (!key || !scopeID) break;
+        if (scope === "project") {
           const g = getGroup(
             "project",
             project ? `Project "${project.name}"` : "Project",
             "project",
           );
-          mergeEnvVarEdit(g, ev.key, ev.value, newValue);
-        } else {
-          const svc = services.find((s) => s.id === ev.scope_id);
+          mergeEnvVarEdit(g, key, oldValue, newValue);
+        } else if (scope === "service") {
+          const svc = services.find((s) => s.id === scopeID);
           const label = svc ? `Service "${svc.name}"` : "Service";
-          const g = getGroup(`service:${ev.scope_id}`, label, "service");
-          mergeEnvVarEdit(g, ev.key, ev.value, newValue);
+          const g = getGroup(`service:${scopeID}`, label, "service");
+          mergeEnvVarEdit(g, key, oldValue, newValue);
         }
         break;
       }
 
       case "env_var.delete": {
-        if (!c.target_id) break;
-        const ev = findEnvVar(c.target_id, input);
-        if (!ev) break;
-        if (ev.scope === "project") {
+        const key = typeof payload.key === "string" ? payload.key : "";
+        const scope = payload.scope;
+        const scopeID = typeof payload.scope_id === "string" ? payload.scope_id : "";
+        const oldValue =
+          typeof payload.old_value === "string" ? payload.old_value : null;
+        if (!key || !scopeID) break;
+        if (scope === "project") {
           const g = getGroup(
             "project",
             project ? `Project "${project.name}"` : "Project",
             "project",
           );
-          mergeEnvVarRemove(g, ev.key, ev.value);
-        } else {
-          const svc = services.find((s) => s.id === ev.scope_id);
+          mergeEnvVarRemove(g, key, oldValue);
+        } else if (scope === "service") {
+          const svc = services.find((s) => s.id === scopeID);
           const label = svc ? `Service "${svc.name}"` : "Service";
-          const g = getGroup(`service:${ev.scope_id}`, label, "service");
-          mergeEnvVarRemove(g, ev.key, ev.value);
+          const g = getGroup(`service:${scopeID}`, label, "service");
+          mergeEnvVarRemove(g, key, oldValue);
         }
         break;
       }
@@ -286,23 +340,25 @@ function mergeEnvVarAdd(g: CompactedChange, key: string, value: string) {
 function mergeEnvVarEdit(
   g: CompactedChange,
   key: string,
-  before: string,
+  before: string | null,
   after: string,
 ) {
   const existing = g.envVars.find((e) => e.key === key);
   if (!existing) {
-    if (before === after) return;
     g.envVars.push({ key, op: "edit", before, after });
     return;
   }
-  // add/edit path — update terminal value.
   existing.after = after;
   if (existing.op === "remove") {
     existing.op = "edit";
   }
 }
 
-function mergeEnvVarRemove(g: CompactedChange, key: string, before: string) {
+function mergeEnvVarRemove(
+  g: CompactedChange,
+  key: string,
+  before: string | null,
+) {
   const existing = g.envVars.find((e) => e.key === key);
   if (!existing) {
     g.envVars.push({ key, op: "remove", before, after: null });
@@ -315,4 +371,8 @@ function mergeEnvVarRemove(g: CompactedChange, key: string, before: string) {
   }
   existing.op = "remove";
   existing.after = null;
+  // Preserve the before value if the previous entry didn't have one.
+  if (existing.before == null && before != null) {
+    existing.before = before;
+  }
 }

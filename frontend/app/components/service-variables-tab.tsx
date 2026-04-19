@@ -2,7 +2,9 @@ import { Link } from "react-router";
 import {
   useCreateServiceEnvVar,
   useDeleteServiceEnvVar,
+  usePendingChanges,
   useProjectEnvVars,
+  useRemovePendingChange,
   useServiceEnvVars,
   useUpdateServiceEnvVar,
 } from "@/lib/queries";
@@ -19,9 +21,11 @@ export function ServiceVariablesTab({
 }: ServiceVariablesTabProps) {
   const envVarsQuery = useServiceEnvVars(projectId, serviceId);
   const projectVarsQuery = useProjectEnvVars(projectId);
+  const pendingChangesQuery = usePendingChanges(projectId);
   const create = useCreateServiceEnvVar(projectId, serviceId);
   const update = useUpdateServiceEnvVar(projectId, serviceId);
   const del = useDeleteServiceEnvVar(projectId, serviceId);
+  const removePending = useRemovePendingChange(projectId);
 
   const inheritedCount = projectVarsQuery.data?.length ?? 0;
 
@@ -48,9 +52,15 @@ export function ServiceVariablesTab({
         onCreate={(data) => create.mutateAsync(data)}
         onUpdate={(args) => update.mutateAsync(args)}
         onDelete={(id) => del.mutateAsync(id).then(() => undefined)}
+        pendingChanges={pendingChangesQuery.data}
+        onCancelPending={(id) =>
+          removePending.mutateAsync(id).then(() => undefined)
+        }
+        scope="service"
+        scopeId={serviceId}
         title="Service variables"
         description="Override or add variables just for this service."
-        redeployMessage="This service will be redeployed."
+        helperText="The deletion will be staged; deploy the project to apply it."
       />
     </div>
   );

@@ -137,6 +137,22 @@ type EnvVarCreatePayload struct {
 }
 
 // EnvVarUpdatePayload is the payload for a PendingOpEnvVarUpdate entry.
+// Scope/ScopeID/Key + OldValue are denormalized from the env_vars row at
+// stage time so the compacted diff view can route, label, and show
+// before→after without a lookup.
 type EnvVarUpdatePayload struct {
-	Value string `json:"value"`
+	Value    string      `json:"value"`
+	OldValue string      `json:"old_value"`
+	Scope    EnvVarScope `json:"scope"`
+	ScopeID  string      `json:"scope_id"`
+	Key      string      `json:"key"`
+}
+
+// EnvVarDeletePayload is the payload for a PendingOpEnvVarDelete entry. Same
+// denormalization rationale as EnvVarUpdatePayload.
+type EnvVarDeletePayload struct {
+	Scope    EnvVarScope `json:"scope"`
+	ScopeID  string      `json:"scope_id"`
+	Key      string      `json:"key"`
+	OldValue string      `json:"old_value"`
 }

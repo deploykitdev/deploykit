@@ -30,6 +30,10 @@ func (s *Server) handleCreateProjectEnvVar(w http.ResponseWriter, r *http.Reques
 		s.errorResponse(w, r, err)
 		return
 	}
+	if err := s.checkEnvVarKeyFree(r.Context(), projectID, deploykit.EnvVarScopeProject, projectID, req.Key); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
 
 	payload, err := json.Marshal(deploykit.EnvVarCreatePayload{
 		Scope: deploykit.EnvVarScopeProject,
@@ -98,7 +102,13 @@ func (s *Server) handleUpdateProjectEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{Value: *req.Value})
+	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{
+		Value:    *req.Value,
+		OldValue: existing.Value,
+		Scope:    existing.Scope,
+		ScopeID:  existing.ScopeID,
+		Key:      existing.Key,
+	})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
@@ -134,11 +144,22 @@ func (s *Server) handleDeleteProjectEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	payload, err := json.Marshal(deploykit.EnvVarDeletePayload{
+		Scope:    existing.Scope,
+		ScopeID:  existing.ScopeID,
+		Key:      existing.Key,
+		OldValue: existing.Value,
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
 	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
 		Op:         deploykit.PendingOpEnvVarDelete,
 		TargetType: deploykit.PendingTargetEnvVar,
 		TargetID:   &envVarID,
-		Payload:    json.RawMessage(`{}`),
+		Payload:    payload,
 		UserID:     currentUserID(r.Context()),
 	})
 	if err != nil {
@@ -167,6 +188,10 @@ func (s *Server) handleCreateServiceEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+	if err := s.checkEnvVarKeyFree(r.Context(), projectID, deploykit.EnvVarScopeService, serviceID, req.Key); err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
@@ -245,7 +270,13 @@ func (s *Server) handleUpdateServiceEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{Value: *req.Value})
+	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{
+		Value:    *req.Value,
+		OldValue: existing.Value,
+		Scope:    existing.Scope,
+		ScopeID:  existing.ScopeID,
+		Key:      existing.Key,
+	})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
@@ -287,11 +318,22 @@ func (s *Server) handleDeleteServiceEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	payload, err := json.Marshal(deploykit.EnvVarDeletePayload{
+		Scope:    existing.Scope,
+		ScopeID:  existing.ScopeID,
+		Key:      existing.Key,
+		OldValue: existing.Value,
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
 	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
 		Op:         deploykit.PendingOpEnvVarDelete,
 		TargetType: deploykit.PendingTargetEnvVar,
 		TargetID:   &envVarID,
-		Payload:    json.RawMessage(`{}`),
+		Payload:    payload,
 		UserID:     currentUserID(r.Context()),
 	})
 	if err != nil {
@@ -304,6 +346,82 @@ func (s *Server) handleDeleteServiceEnvVar(w http.ResponseWriter, r *http.Reques
 }
 
 // --- Helpers ---
+
+// checkEnvVarKeyFree returns ECONFLICT if an env var with the given key
+// already exists on the target — either as an applied row or as a pending
+// env_var.create entry. Staging a collision would pass validation but
+// roll back the entire deploy tx when EnvVarService.CreateEnvVar hits the
+// unique constraint.
+func (s *Server) checkEnvVarKeyFree(
+	ctx context.Context,
+	projectID string,
+	scope deploykit.EnvVarScope,
+	scopeID, key string,
+) error {
+	applied, err := s.EnvVarService.ListEnvVars(ctx, scope, scopeID)
+	if err != nil {
+		return err
+	}
+	changes, err := s.PendingChangeService.List(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if envVarKeyTaken(applied, changes, scope, scopeID, key) {
+		return deploykit.Errorf(deploykit.ECONFLICT, "Env var %q already exists.", key)
+	}
+	return nil
+}
+
+// envVarKeyTaken is a pure check over applied rows and pending entries.
+// Exposed separately so unit tests don't need an HTTP stack.
+func envVarKeyTaken(
+	applied []*deploykit.EnvVar,
+	changes []*deploykit.PendingChange,
+	scope deploykit.EnvVarScope,
+	scopeID, key string,
+) bool {
+	for _, ev := range applied {
+		if ev.Scope != scope || ev.ScopeID != scopeID || ev.Key != key {
+			continue
+		}
+		// An applied row that's staged for deletion doesn't count — the
+		// delete lands first at apply time, so re-adding is valid.
+		if pendingDeletesEnvVar(changes, ev.ID) {
+			continue
+		}
+		return true
+	}
+	for _, c := range changes {
+		if c.Op != deploykit.PendingOpEnvVarCreate {
+			continue
+		}
+		// Pending-added services carry their env vars under ParentTempID;
+		// applied targets use TargetID. We only match the TargetID case — a
+		// parent-temp-id staged env var can't collide with an applied service.
+		if c.TargetID == nil || *c.TargetID != scopeID {
+			continue
+		}
+		var p deploykit.EnvVarCreatePayload
+		if err := json.Unmarshal(c.Payload, &p); err != nil {
+			continue
+		}
+		if p.Scope == scope && p.Key == key {
+			return true
+		}
+	}
+	return false
+}
+
+// pendingDeletesEnvVar reports whether a staged env_var.delete targets the
+// given applied env var row.
+func pendingDeletesEnvVar(changes []*deploykit.PendingChange, envVarID string) bool {
+	for _, c := range changes {
+		if c.Op == deploykit.PendingOpEnvVarDelete && c.TargetID != nil && *c.TargetID == envVarID {
+			return true
+		}
+	}
+	return false
+}
 
 // verifyServiceInProject returns ENOTFOUND if the service doesn't exist or
 // doesn't belong to the given project.

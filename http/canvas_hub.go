@@ -68,12 +68,8 @@ func (h *canvasHub) broadcastToProject(projectID string, msg []byte) {
 
 // broadcastPendingChangeAdded fans out a newly-appended change log entry.
 func (h *canvasHub) broadcastPendingChangeAdded(projectID string, pc *deploykit.PendingChange) {
-	payload, err := json.Marshal(pc)
-	if err != nil {
-		return
-	}
-	msg, err := json.Marshal(wsMessage{Type: "pending-change:added", Payload: payload})
-	if err != nil {
+	msg, ok := h.marshalWS("pending-change:added", pc)
+	if !ok {
 		return
 	}
 	h.broadcastToProject(projectID, msg)
@@ -83,12 +79,8 @@ func (h *canvasHub) broadcastPendingChangeAdded(projectID string, pc *deploykit.
 // have been removed (e.g. when a pending-added service's canvas node is
 // deleted before deploy). Clients drop the matching IDs from their cache.
 func (h *canvasHub) broadcastPendingChangesRemoved(projectID string, ids []string) {
-	payload, err := json.Marshal(map[string]any{"ids": ids})
-	if err != nil {
-		return
-	}
-	msg, err := json.Marshal(wsMessage{Type: "pending-changes:removed", Payload: payload})
-	if err != nil {
+	msg, ok := h.marshalWS("pending-changes:removed", map[string]any{"ids": ids})
+	if !ok {
 		return
 	}
 	h.broadcastToProject(projectID, msg)
@@ -97,8 +89,8 @@ func (h *canvasHub) broadcastPendingChangesRemoved(projectID string, ids []strin
 // broadcastPendingCleared announces that the project's pending change log was
 // cleared without applying.
 func (h *canvasHub) broadcastPendingCleared(projectID string) {
-	msg, err := json.Marshal(wsMessage{Type: "pending-changes:cleared", Payload: json.RawMessage(`{}`)})
-	if err != nil {
+	msg, ok := h.marshalWS("pending-changes:cleared", struct{}{})
+	if !ok {
 		return
 	}
 	h.broadcastToProject(projectID, msg)
@@ -108,15 +100,29 @@ func (h *canvasHub) broadcastPendingCleared(projectID string) {
 // refetch applied state (services, env vars) since multiple resources may
 // have changed atomically.
 func (h *canvasHub) broadcastPendingApplied(projectID string, result *deploykit.ApplyResult) {
-	payload, err := json.Marshal(result)
-	if err != nil {
-		return
-	}
-	msg, err := json.Marshal(wsMessage{Type: "pending-changes:applied", Payload: payload})
-	if err != nil {
+	msg, ok := h.marshalWS("pending-changes:applied", result)
+	if !ok {
 		return
 	}
 	h.broadcastToProject(projectID, msg)
+}
+
+// marshalWS produces a wsMessage envelope, logging and discarding on failure.
+// Marshal errors on the static shapes used by these broadcasts indicate a
+// programming bug rather than transient failure — silently swallowing them
+// would mask a regression.
+func (h *canvasHub) marshalWS(msgType string, payload any) ([]byte, bool) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		h.logger.Error("marshaling ws payload", "err", err, "type", msgType)
+		return nil, false
+	}
+	msg, err := json.Marshal(wsMessage{Type: msgType, Payload: encoded})
+	if err != nil {
+		h.logger.Error("marshaling ws envelope", "err", err, "type", msgType)
+		return nil, false
+	}
+	return msg, true
 }
 
 // dispatchEvent routes a single bus event to the matching project room.

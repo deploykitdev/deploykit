@@ -16,14 +16,14 @@ interface EnvVarDeleteDialogProps {
   envVar: EnvVar | null;
   onClose: () => void;
   onDelete: (id: string) => Promise<void>;
-  redeployMessage: string;
+  helperText: string;
 }
 
 export function EnvVarDeleteDialog({
   envVar,
   onClose,
   onDelete,
-  redeployMessage,
+  helperText,
 }: EnvVarDeleteDialogProps) {
   const [error, setError] = useState("");
   const [isDeleting, setIsDeleting] = useState(false);
@@ -49,7 +49,7 @@ export function EnvVarDeleteDialog({
           <DialogTitle>Delete variable</DialogTitle>
           <DialogDescription>
             Delete <code className="font-mono">{envVar?.key}</code>?{" "}
-            {redeployMessage}
+            {helperText}
           </DialogDescription>
         </DialogHeader>
         {error && <FieldError>{error}</FieldError>}
@@ -62,7 +62,7 @@ export function EnvVarDeleteDialog({
             onClick={handleDelete}
             disabled={isDeleting}
           >
-            {isDeleting ? "Deleting…" : "Delete"}
+            {isDeleting ? "Staging…" : "Stage deletion"}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -12,12 +12,8 @@ import { toast } from "sonner";
 import { Link } from "react-router";
 import { SettingsIcon } from "lucide-react";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
-import {
-  usePendingChanges,
-  useProjectServices,
-  type PendingChange,
-  type Service,
-} from "@/lib/queries";
+import { usePendingChanges, useProjectServices, type Service } from "@/lib/queries";
+import { collectServiceOverrides } from "@/lib/pending-changes-diff";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
 import { CanvasContextMenu } from "./canvas-context-menu";
@@ -453,53 +449,6 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       <PendingChangesPanel projectId={projectId} />
     </div>
   );
-}
-
-// Per-service override distilled from the pending change log. `iconUrlSet`
-// being present (even with null) means an update was staged that explicitly
-// touched the icon — null means clear, string means set; undefined means no
-// staged icon change, so applied state should show.
-interface ServiceOverride {
-  name?: string;
-  iconUrlSet?: string | null;
-  pendingDelete?: boolean;
-}
-
-function collectServiceOverrides(
-  changes: PendingChange[] | undefined,
-): Map<string, ServiceOverride> {
-  const out = new Map<string, ServiceOverride>();
-  if (!changes) return out;
-  for (const c of changes) {
-    if (c.op === "service.update" && c.target_id) {
-      const payload = parseObject(c.payload);
-      const existing = out.get(c.target_id) ?? {};
-      if (typeof payload.name === "string") existing.name = payload.name;
-      if ("icon_url" in payload) {
-        const raw = payload.icon_url;
-        existing.iconUrlSet =
-          typeof raw === "string" && raw !== "" ? raw : null;
-      }
-      out.set(c.target_id, existing);
-    } else if (c.op === "service.delete" && c.target_id) {
-      const existing = out.get(c.target_id) ?? {};
-      existing.pendingDelete = true;
-      out.set(c.target_id, existing);
-    }
-  }
-  return out;
-}
-
-function parseObject(raw: unknown): Record<string, unknown> {
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return {};
-    }
-  }
-  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
-  return {};
 }
 
 function CursorTracker({

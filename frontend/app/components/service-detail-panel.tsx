@@ -2,12 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Panel } from "@xyflow/react";
 import { XIcon } from "lucide-react";
 import { Tabs, TabList, Tab, TabPanel } from "./ui/tabs";
-import {
-  useDeployments,
-  usePendingChanges,
-  useService,
-  type PendingChange,
-} from "@/lib/queries";
+import { useDeployments, usePendingChanges, useService } from "@/lib/queries";
+import { collectServiceOverride } from "@/lib/pending-changes-diff";
 import { ServiceDeploymentsTab } from "./service-deployments-tab";
 import { ServiceVariablesTab } from "./service-variables-tab";
 import { ServiceMetricsTab } from "./service-metrics-tab";
@@ -34,7 +30,7 @@ export function ServiceDetailPanel({
   // Merge staged service.update entries into a single "target" override so
   // the header reflects pending renames / icon changes before deploy.
   const override = useMemo(
-    () => collectOverride(pendingChanges, serviceId),
+    () => collectServiceOverride(pendingChanges, serviceId),
     [pendingChanges, serviceId],
   );
   const pendingDelete = override?.pendingDelete ?? false;
@@ -142,47 +138,4 @@ export function ServiceDetailPanel({
       </Tabs>
     </Panel>
   );
-}
-
-interface ServiceOverride {
-  name?: string;
-  // present when an update staged a change to the icon. null = clear.
-  iconUrlSet?: string | null;
-  pendingDelete?: boolean;
-}
-
-function collectOverride(
-  changes: PendingChange[] | undefined,
-  serviceId: string,
-): ServiceOverride | undefined {
-  if (!changes) return undefined;
-  let out: ServiceOverride | undefined;
-  for (const c of changes) {
-    if (c.target_id !== serviceId) continue;
-    if (c.op === "service.update") {
-      const payload = parseObject(c.payload);
-      if (!out) out = {};
-      if (typeof payload.name === "string") out.name = payload.name;
-      if ("icon_url" in payload) {
-        const raw = payload.icon_url;
-        out.iconUrlSet = typeof raw === "string" && raw !== "" ? raw : null;
-      }
-    } else if (c.op === "service.delete") {
-      if (!out) out = {};
-      out.pendingDelete = true;
-    }
-  }
-  return out;
-}
-
-function parseObject(raw: unknown): Record<string, unknown> {
-  if (typeof raw === "string") {
-    try {
-      return JSON.parse(raw);
-    } catch {
-      return {};
-    }
-  }
-  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
-  return {};
 }
