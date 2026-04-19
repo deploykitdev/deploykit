@@ -108,6 +108,14 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.EventBus != nil {
+		s.EventBus.Publish(r.Context(), deploykit.Event{
+			Type:      deploykit.EventServiceUpdated,
+			ProjectID: projectID,
+			Payload:   deploykit.ServiceUpdatedPayload{Service: svc},
+		})
+	}
+
 	jsonResponse(w, http.StatusOK, svc)
 }
 

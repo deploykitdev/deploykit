@@ -10,6 +10,7 @@ type EventType string
 
 const (
 	EventServiceCreated       EventType = "service.created"
+	EventServiceUpdated       EventType = "service.updated"
 	EventServiceDeleted       EventType = "service.deleted"
 	EventServiceStatusChanged EventType = "service.status.changed"
 	EventContainerCreated     EventType = "container.created"
@@ -46,6 +47,10 @@ type Subscription interface {
 // Event payload types.
 
 type ServiceCreatedPayload struct {
+	Service *Service `json:"service"`
+}
+
+type ServiceUpdatedPayload struct {
 	Service *Service `json:"service"`
 }
 

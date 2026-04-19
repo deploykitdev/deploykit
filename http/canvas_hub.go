@@ -78,7 +78,7 @@ func (h *canvasHub) dispatchEvent(evt deploykit.Event) {
 func translateBusEvent(evt deploykit.Event) ([]byte, bool) {
 	var msgType string
 	switch evt.Type {
-	case deploykit.EventServiceCreated:
+	case deploykit.EventServiceCreated, deploykit.EventServiceUpdated:
 		msgType = "service:upserted"
 	case deploykit.EventServiceStatusChanged:
 		msgType = "service:status-changed"

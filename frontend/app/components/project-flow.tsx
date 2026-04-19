@@ -227,10 +227,12 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       const nextStatus = svc.status;
       const nextImage = svc.active_deployment?.image;
       const nextIconUrl = svc.icon_url ?? undefined;
+      const nextLabel = svc.name;
       if (
         data?.status === nextStatus &&
         data?.image === nextImage &&
-        data?.iconUrl === nextIconUrl
+        data?.iconUrl === nextIconUrl &&
+        data?.label === nextLabel
       ) {
         return n;
       }
@@ -238,6 +240,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         ...n,
         data: {
           ...data,
+          label: nextLabel,
           status: nextStatus,
           image: nextImage,
           iconUrl: nextIconUrl,
