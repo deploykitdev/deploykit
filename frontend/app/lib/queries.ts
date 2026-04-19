@@ -230,6 +230,21 @@ export function useCreateProject() {
   });
 }
 
+export function useUpdateProject(id: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (update: { name?: string }) =>
+      api<Project>(`/projects/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify(update),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.project(id) });
+      qc.invalidateQueries({ queryKey: queryKeys.projects });
+    },
+  });
+}
+
 export function useUsers() {
   return useQuery({
     queryKey: queryKeys.users,
