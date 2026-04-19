@@ -75,19 +75,41 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateProject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("projectId")
 
+	if _, err := s.ProjectService.GetProject(r.Context(), id); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
 	var req deploykit.ProjectUpdate
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
 
-	project, err := s.ProjectService.UpdateProject(r.Context(), id, req)
+	payload, err := json.Marshal(deploykit.ProjectUpdatePayload{Name: req.Name})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	jsonResponse(w, http.StatusOK, project)
+	pc, err := s.PendingChangeService.Append(r.Context(), id, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpProjectUpdate,
+		TargetType: deploykit.PendingTargetProject,
+		TargetID:   &id,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	s.canvasHub.broadcastPendingChangeAdded(id, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }
 
 func (s *Server) handleDeleteProject(w http.ResponseWriter, r *http.Request) {

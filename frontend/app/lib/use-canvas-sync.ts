@@ -11,7 +11,12 @@ import {
 } from "@xyflow/react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CanvasWebSocket, type ConnectionStatus } from "./canvas-ws";
-import { queryKeys, type Service, type Deployment } from "./queries";
+import {
+  queryKeys,
+  type Service,
+  type Deployment,
+  type PendingChange,
+} from "./queries";
 
 export interface CursorInfo {
   user_id: string;
@@ -267,29 +272,18 @@ export function useCanvasSync(projectId: string) {
       });
     });
 
-    ws.on<{ draft_id: string; service?: Service }>(
+    // service:create no longer commits a service — it stages a pending
+    // change and upserts a placeholder canvas node. The draft form closes
+    // on success; actual service creation happens on deploy.
+    ws.on<{ draft_id: string }>(
       "service:created",
-      ({ draft_id, service }) => {
+      ({ draft_id }) => {
         setLocalDrafts((prev) => {
           if (!prev.has(draft_id)) return prev;
           const next = new Map(prev);
           next.delete(draft_id);
           return next;
         });
-        if (service) {
-          queryClient.setQueryData<Service>(
-            queryKeys.service(projectId, service.id),
-            service,
-          );
-          queryClient.setQueryData<Service[]>(
-            queryKeys.projectServices(projectId),
-            (prev) => {
-              if (!prev) return prev;
-              if (prev.some((s) => s.id === service.id)) return prev;
-              return [...prev, service];
-            },
-          );
-        }
       },
     );
 
@@ -357,6 +351,64 @@ export function useCanvasSync(projectId: string) {
         queryKeys.projectServices(projectId),
         (prev) => (prev ? prev.filter((s) => s.id !== service_id) : prev),
       );
+    });
+
+    // --- Pending change sync: keep the query cache in lock-step with the
+    // server's log so every client (including other users' sessions) reflects
+    // staged edits in real time. ---
+
+    ws.on<{ changes: PendingChange[] }>("pending-changes:state", ({ changes }) => {
+      queryClient.setQueryData<PendingChange[]>(
+        queryKeys.pendingChanges(projectId),
+        changes,
+      );
+    });
+
+    ws.on<PendingChange>("pending-change:added", (pc) => {
+      queryClient.setQueryData<PendingChange[]>(
+        queryKeys.pendingChanges(projectId),
+        (prev) => {
+          if (!prev) return [pc];
+          if (prev.some((p) => p.id === pc.id)) return prev;
+          const next = [...prev, pc];
+          next.sort((a, b) => a.seq - b.seq);
+          return next;
+        },
+      );
+    });
+
+    ws.on<{ ids: string[] }>("pending-changes:removed", ({ ids }) => {
+      if (!ids || ids.length === 0) return;
+      const drop = new Set(ids);
+      queryClient.setQueryData<PendingChange[]>(
+        queryKeys.pendingChanges(projectId),
+        (prev) => (prev ? prev.filter((p) => !drop.has(p.id)) : prev),
+      );
+    });
+
+    ws.on("pending-changes:cleared", () => {
+      queryClient.setQueryData<PendingChange[]>(
+        queryKeys.pendingChanges(projectId),
+        [],
+      );
+    });
+
+    // Deploy landed: the server has already pushed a fresh canvas:state.
+    // Invalidate applied-state queries so the UI rereads services, env vars,
+    // deployments, project name, etc. Also empty the pending change list.
+    ws.on("pending-changes:applied", () => {
+      queryClient.setQueryData<PendingChange[]>(
+        queryKeys.pendingChanges(projectId),
+        [],
+      );
+      queryClient.invalidateQueries({
+        predicate: (q) => {
+          const key = q.queryKey;
+          return (
+            Array.isArray(key) && key[0] === "projects" && key[1] === projectId
+          );
+        },
+      });
     });
 
     ws.on<{ deployment: Deployment }>(
@@ -522,24 +574,30 @@ export function useCanvasSync(projectId: string) {
     [],
   );
 
+  // Snapshot keyed by draft ID so submitServiceDraft can read position without
+  // touching setLocalDrafts — updater functions run twice under StrictMode and
+  // side effects inside them would double-fire the WS send.
+  const localDraftsRef = useRef<Map<string, LocalServiceDraft>>(new Map());
+  useEffect(() => {
+    localDraftsRef.current = localDrafts;
+  }, [localDrafts]);
+
   const submitServiceDraft = useCallback(
     (draftId: string, values: { name: string; image: string }) => {
+      const existing = localDraftsRef.current.get(draftId);
+      if (!existing) return;
+      wsRef.current?.send("service:create", {
+        draft_id: draftId,
+        name: values.name,
+        image: values.image,
+        x: existing.x,
+        y: existing.y,
+      });
       setLocalDrafts((prev) => {
-        const existing = prev.get(draftId);
-        if (!existing) return prev;
-        wsRef.current?.send("service:create", {
-          draft_id: draftId,
-          name: values.name,
-          image: values.image,
-          x: existing.x,
-          y: existing.y,
-        });
+        const curr = prev.get(draftId);
+        if (!curr) return prev;
         const next = new Map(prev);
-        next.set(draftId, {
-          ...existing,
-          isSubmitting: true,
-          errorMessage: null,
-        });
+        next.set(draftId, { ...curr, isSubmitting: true, errorMessage: null });
         return next;
       });
     },

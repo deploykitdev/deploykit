@@ -24,11 +24,11 @@ interface EnvVarsSectionProps {
   envVars: EnvVar[] | undefined;
   isLoading: boolean;
   isError: boolean;
-  onCreate: (data: { key: string; value: string }) => Promise<EnvVar>;
-  onUpdate: (args: { id: string; value: string }) => Promise<EnvVar>;
+  // Mutations now stage pending changes; the resolved value is ignored.
+  onCreate: (data: { key: string; value: string }) => Promise<unknown>;
+  onUpdate: (args: { id: string; value: string }) => Promise<unknown>;
   onDelete: (id: string) => Promise<void>;
-  // redeployMessage is shown in the delete confirmation, phrased for the scope
-  // (e.g. "All services in this project will be redeployed.").
+  // Copy shown in the delete confirmation, phrased for the scope.
   redeployMessage: string;
   title: string;
   description?: string;

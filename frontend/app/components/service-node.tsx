@@ -9,6 +9,10 @@ export interface ServiceNodeData extends Record<string, unknown> {
   serviceId?: string;
   status?: string;
   iconUrl?: string;
+  // True when the service has a staged service.delete entry and will be
+  // removed on deploy. The node stays visible so the diff is discoverable
+  // and discardable, but renders faded and is non-interactive.
+  pendingDelete?: boolean;
 }
 
 type StatusKey =
@@ -72,7 +76,8 @@ const STATUS: Record<
 };
 
 export function ServiceNode({ data, selected }: NodeProps) {
-  const { label, image, status, iconUrl } = data as ServiceNodeData;
+  const { label, image, status, iconUrl, pendingDelete } =
+    data as ServiceNodeData;
   const key: StatusKey =
     status && status in STATUS ? (status as StatusKey) : "created";
   const meta = STATUS[key];
@@ -88,10 +93,11 @@ export function ServiceNode({ data, selected }: NodeProps) {
     <div
       className={cn(
         "group relative w-80 overflow-hidden rounded-xl border bg-card text-card-foreground",
-        "shadow-md transition-[border-color,box-shadow] duration-200 ease-out",
+        "shadow-md transition-[border-color,box-shadow,opacity] duration-200 ease-out",
         selected
           ? "border-primary/70 ring-[3px] ring-primary/15"
           : "border-border/80",
+        pendingDelete && "opacity-50 grayscale",
       )}
     >
       <div

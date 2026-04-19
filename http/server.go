@@ -38,15 +38,16 @@ type Server struct {
 	EventBus deploykit.EventBus
 
 	// Service dependencies.
-	ProjectService    deploykit.ProjectService
-	UserService       deploykit.UserService
-	AuthService       deploykit.AuthService
-	ServiceService    deploykit.ServiceService
-	DeploymentService deploykit.DeploymentService
-	ContainerService  deploykit.ContainerService
-	CanvasService     deploykit.CanvasService
-	SystemService     deploykit.SystemService
-	EnvVarService     deploykit.EnvVarService
+	ProjectService       deploykit.ProjectService
+	UserService          deploykit.UserService
+	AuthService          deploykit.AuthService
+	ServiceService       deploykit.ServiceService
+	DeploymentService    deploykit.DeploymentService
+	ContainerService     deploykit.ContainerService
+	CanvasService        deploykit.CanvasService
+	SystemService        deploykit.SystemService
+	EnvVarService        deploykit.EnvVarService
+	PendingChangeService deploykit.PendingChangeService
 
 	// LogStreamer streams logs from a container runtime (Docker, Podman, …)
 	// for endpoints like /logs that can't be expressed through the domain
@@ -155,6 +156,12 @@ func (s *Server) registerRoutes() {
 	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/env-vars", s.handleListServiceEnvVars)
 	protected.HandleFunc("PATCH /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleUpdateServiceEnvVar)
 	protected.HandleFunc("DELETE /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleDeleteServiceEnvVar)
+
+	protected.HandleFunc("GET /projects/{projectId}/pending-changes", s.handleListPendingChanges)
+	protected.HandleFunc("DELETE /projects/{projectId}/pending-changes", s.handleDiscardPendingChanges)
+	protected.HandleFunc("DELETE /projects/{projectId}/pending-changes/{changeId}", s.handleDeletePendingChange)
+	protected.HandleFunc("POST /projects/{projectId}/pending-services/{tempId}/env-vars", s.handleCreatePendingServiceEnvVar)
+	protected.HandleFunc("POST /projects/{projectId}/deploy", s.handleDeployProject)
 
 	adminOnly := s.requireRole(deploykit.RoleAdmin)
 	protected.Handle("POST /users", adminOnly(http.HandlerFunc(s.handleCreateUser)))

@@ -66,18 +66,20 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Create client and atomically join the room.
 	client := &canvasClient{
-		connID:            uuid.New().String(),
-		userID:            user.ID,
-		userName:          user.Name,
-		conn:              conn,
-		send:              make(chan []byte, 256),
-		projectID:         projectID,
-		canvasService:     s.CanvasService,
-		serviceService:    s.ServiceService,
-		deploymentService: s.DeploymentService,
-		reconciler:        s.Reconciler,
-		eventBus:          s.EventBus,
-		logger:            s.logger,
+		connID:               uuid.New().String(),
+		userID:               user.ID,
+		userName:             user.Name,
+		conn:                 conn,
+		send:                 make(chan []byte, 256),
+		hub:                  s.canvasHub,
+		projectID:            projectID,
+		canvasService:        s.CanvasService,
+		serviceService:       s.ServiceService,
+		deploymentService:    s.DeploymentService,
+		pendingChangeService: s.PendingChangeService,
+		reconciler:           s.Reconciler,
+		eventBus:             s.EventBus,
+		logger:               s.logger,
 	}
 	room := s.canvasHub.joinRoom(projectID, client)
 	client.room = room
@@ -99,6 +101,16 @@ func (s *Server) handleCanvasWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Send snapshot of any in-flight service drafts so late-joiners see ghosts.
 	if err := client.sendServiceDrafts(room.draftsList()); err != nil {
 		s.logger.Error("sending service drafts", "err", err)
+	}
+
+	// Send the current pending change log so the client shows the bottom panel.
+	if s.PendingChangeService != nil {
+		changes, err := s.PendingChangeService.List(r.Context(), projectID)
+		if err != nil {
+			s.logger.Error("loading pending changes", "err", err, "project_id", projectID)
+		} else if err := client.sendPendingChanges(changes); err != nil {
+			s.logger.Error("sending pending changes", "err", err)
+		}
 	}
 
 	s.logger.Info("canvas client connected",
@@ -214,6 +226,27 @@ func (c *canvasClient) sendConnectedUsers(users []connectedUser) error {
 		return fmt.Errorf("marshaling users list message: %w", err)
 	}
 
+	select {
+	case c.send <- msg:
+		return nil
+	default:
+		return fmt.Errorf("send buffer full")
+	}
+}
+
+// sendPendingChanges sends the current pending change log to this client.
+func (c *canvasClient) sendPendingChanges(changes []*deploykit.PendingChange) error {
+	if changes == nil {
+		changes = []*deploykit.PendingChange{}
+	}
+	payload, err := json.Marshal(map[string]any{"changes": changes})
+	if err != nil {
+		return fmt.Errorf("marshaling pending changes: %w", err)
+	}
+	msg, err := json.Marshal(wsMessage{Type: "pending-changes:state", Payload: payload})
+	if err != nil {
+		return fmt.Errorf("marshaling pending changes message: %w", err)
+	}
 	select {
 	case c.send <- msg:
 		return nil
@@ -362,34 +395,73 @@ func (c *canvasClient) handleNodeDelete(ctx context.Context, payload json.RawMes
 		return
 	}
 
-	serviceID, err := c.canvasService.DeleteNode(ctx, c.projectID, req.ID)
+	// Branch on whether this node is linked to a real (applied) service.
+	// If yes, the service keeps running until deploy — stage a service.delete
+	// pending change but leave the canvas node in place so the diff UI can
+	// render it as "pending deletion". Frontend styles it accordingly.
+	//
+	// If no, this is a pending-added service that was never deployed —
+	// remove the node outright and drop any pending changes that reference it.
+	nodes, _, err := c.canvasService.GetCanvasState(ctx, c.projectID)
 	if err != nil {
+		c.logger.Error("loading canvas state for node delete", "err", err)
+		c.sendError("Failed to delete node.")
+		return
+	}
+	var target *deploykit.CanvasNode
+	for _, n := range nodes {
+		if n.ID == req.ID {
+			target = n
+			break
+		}
+	}
+	if target == nil {
+		c.sendError("Node not found.")
+		return
+	}
+
+	if target.Type == deploykit.CanvasNodeTypeService && target.ServiceID != nil {
+		// Stage a service.delete pending change; keep the node visible.
+		pcPayload := json.RawMessage(`{}`)
+		pc, err := c.pendingChangeService.Append(ctx, c.projectID, deploykit.PendingChangeInput{
+			Op:         deploykit.PendingOpServiceDelete,
+			TargetType: deploykit.PendingTargetService,
+			TargetID:   target.ServiceID,
+			Payload:    pcPayload,
+			UserID:     &c.userID,
+		})
+		if err != nil {
+			c.logger.Error("staging service delete", "err", err)
+			c.sendError("Failed to stage service deletion.")
+			return
+		}
+		c.hub.broadcastPendingChangeAdded(c.projectID, pc)
+		return
+	}
+
+	// Pending-added service node (no backing service yet) or a plain canvas
+	// node — remove it directly and drop any pending changes keyed by its ID.
+	if _, err := c.canvasService.DeleteNode(ctx, c.projectID, req.ID); err != nil {
 		c.logger.Error("deleting canvas node", "err", err)
 		c.sendError("Failed to delete node.")
 		return
 	}
-
-	// Cascade: a canvas service-node and its backing service share a lifecycle.
-	if serviceID != nil {
-		if err := c.serviceService.DeleteService(ctx, *serviceID); err != nil {
-			c.logger.Error("deleting service after node delete", "err", err, "service_id", *serviceID)
-		} else {
-			if c.eventBus != nil {
-				c.eventBus.Publish(ctx, deploykit.Event{
-					Type:      deploykit.EventServiceDeleted,
-					ProjectID: c.projectID,
-					Payload:   deploykit.ServiceDeletedPayload{ServiceID: *serviceID},
-				})
-			}
-			if c.reconciler != nil {
-				c.reconciler.Trigger()
-			}
+	var removedChangeIDs []string
+	if c.pendingChangeService != nil {
+		ids, err := c.pendingChangeService.RemoveByTempID(ctx, c.projectID, req.ID)
+		if err != nil {
+			c.logger.Error("removing pending changes for temp id", "err", err, "temp_id", req.ID)
 		}
+		removedChangeIDs = ids
 	}
 
 	response, _ := json.Marshal(map[string]string{"id": req.ID})
 	msg, _ := json.Marshal(wsMessage{Type: "node:deleted", Payload: response})
 	c.room.broadcastAll(msg)
+
+	if len(removedChangeIDs) > 0 {
+		c.hub.broadcastPendingChangesRemoved(c.projectID, removedChangeIDs)
+	}
 }
 
 func (c *canvasClient) handleNodeMove(ctx context.Context, payload json.RawMessage) {
@@ -549,57 +621,54 @@ func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.Raw
 		return
 	}
 
-	service, err := c.serviceService.CreateService(ctx, c.projectID, deploykit.ServiceCreate{Name: req.Name})
-	if err != nil {
-		c.logger.Error("creating service from canvas", "err", err)
-		c.sendCreateError(req.DraftID, serviceCreateErrorMessage(err))
-		return
-	}
-	if c.eventBus != nil {
-		c.eventBus.Publish(ctx, deploykit.Event{
-			Type:      deploykit.EventServiceCreated,
-			ProjectID: c.projectID,
-			Payload:   deploykit.ServiceCreatedPayload{Service: service},
-		})
-	}
-
-	deployment, err := c.deploymentService.CreateDeployment(ctx, service.ID, deploykit.DeploymentCreate{Image: req.Image})
-	if err != nil {
-		c.logger.Error("creating first deployment from canvas", "err", err)
-		if delErr := c.serviceService.DeleteService(ctx, service.ID); delErr != nil {
-			c.logger.Error("rolling back service after deployment failure", "err", delErr, "service_id", service.ID)
-		}
-		c.sendCreateError(req.DraftID, "Failed to create deployment.")
-		return
-	}
-	if c.eventBus != nil {
-		c.eventBus.Publish(ctx, deploykit.Event{
-			Type:      deploykit.EventDeploymentCreated,
-			ProjectID: c.projectID,
-			Payload:   deploykit.DeploymentCreatedPayload{Deployment: deployment},
-		})
-	}
-
-	data, _ := json.Marshal(map[string]string{"image": deployment.Image})
+	// Place the canvas node up-front so everyone sees the pending service.
+	// The node's ID doubles as the pending-change temp ID: later env var
+	// edits against this not-yet-created service reference it via
+	// parent_temp_id, and Apply populates service_id on this same node row.
+	nodeID := uuid.New().String()
+	nodeData, _ := json.Marshal(map[string]string{"image": req.Image})
 	node, err := c.canvasService.UpsertNode(ctx, c.projectID, deploykit.CanvasNodeUpsert{
-		ID:        uuid.New().String(),
+		ID:        nodeID,
 		Type:      deploykit.CanvasNodeTypeService,
-		Label:     service.Name,
+		Label:     req.Name,
 		PositionX: req.X,
 		PositionY: req.Y,
-		ServiceID: &service.ID,
-		Data:      string(data),
+		Data:      string(nodeData),
 	})
 	if err != nil {
-		c.logger.Error("creating canvas node for service", "err", err)
-		if delErr := c.serviceService.DeleteService(ctx, service.ID); delErr != nil {
-			c.logger.Error("rolling back service after node failure", "err", delErr, "service_id", service.ID)
-		}
+		c.logger.Error("creating canvas node for pending service", "err", err)
 		c.sendCreateError(req.DraftID, "Failed to place service on canvas.")
 		return
 	}
 
-	// Clear the draft on success so the ghost disappears for other clients.
+	pcPayload, err := json.Marshal(deploykit.ServiceCreatePayload{
+		Name:  req.Name,
+		Image: req.Image,
+	})
+	if err != nil {
+		c.logger.Error("marshaling service create payload", "err", err)
+		c.sendCreateError(req.DraftID, "Failed to stage service creation.")
+		return
+	}
+
+	pc, err := c.pendingChangeService.Append(ctx, c.projectID, deploykit.PendingChangeInput{
+		Op:           deploykit.PendingOpServiceCreate,
+		TargetType:   deploykit.PendingTargetService,
+		TargetTempID: &nodeID,
+		Payload:      pcPayload,
+		UserID:       &c.userID,
+	})
+	if err != nil {
+		c.logger.Error("staging service create", "err", err)
+		// Roll back the canvas node so the user isn't left with a dangling visual.
+		if _, delErr := c.canvasService.DeleteNode(ctx, c.projectID, nodeID); delErr != nil {
+			c.logger.Error("rolling back canvas node after append failure", "err", delErr)
+		}
+		c.sendCreateError(req.DraftID, serviceCreateErrorMessage(err))
+		return
+	}
+
+	// Clear the draft so other clients' ghosts disappear.
 	c.room.mu.Lock()
 	delete(c.room.drafts, req.DraftID)
 	c.room.mu.Unlock()
@@ -612,11 +681,12 @@ func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.Raw
 	nodeMsg, _ := json.Marshal(wsMessage{Type: "node:upserted", Payload: nodePayload})
 	c.room.broadcastAll(nodeMsg)
 
+	c.hub.broadcastPendingChangeAdded(c.projectID, pc)
+
 	createdPayload, _ := json.Marshal(map[string]any{
-		"draft_id":   req.DraftID,
-		"service":    service,
-		"deployment": deployment,
-		"node":       node,
+		"draft_id":       req.DraftID,
+		"node":           node,
+		"pending_change": pc,
 	})
 	createdMsg, _ := json.Marshal(wsMessage{Type: "service:created", Payload: createdPayload})
 	select {

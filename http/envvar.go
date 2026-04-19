@@ -3,13 +3,15 @@ package http
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"github.com/heyjorgedev/deploykit"
 )
 
 // --- Project-scoped handlers ---
+//
+// All env var mutations stage a pending change instead of writing to the
+// env_vars table directly. Applied state mutates only on /projects/:id/deploy.
 
 func (s *Server) handleCreateProjectEnvVar(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
@@ -24,18 +26,35 @@ func (s *Server) handleCreateProjectEnvVar(w http.ResponseWriter, r *http.Reques
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
 
-	ev, err := s.EnvVarService.CreateEnvVar(r.Context(), deploykit.EnvVarScopeProject, projectID, req)
+	payload, err := json.Marshal(deploykit.EnvVarCreatePayload{
+		Scope: deploykit.EnvVarScopeProject,
+		Key:   req.Key,
+		Value: req.Value,
+	})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if err := s.redeployProjectServices(r.Context(), projectID); err != nil {
-		s.logger.Error("redeploying services after project env var create", "err", err, "project_id", projectID)
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarCreate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &projectID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
-	jsonResponse(w, http.StatusCreated, ev)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusCreated, pc)
 }
 
 func (s *Server) handleListProjectEnvVars(w http.ResponseWriter, r *http.Request) {
@@ -74,18 +93,31 @@ func (s *Server) handleUpdateProjectEnvVar(w http.ResponseWriter, r *http.Reques
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+	if req.Value == nil {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "value is required."))
+		return
+	}
 
-	ev, err := s.EnvVarService.UpdateEnvVar(r.Context(), envVarID, req)
+	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{Value: *req.Value})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if err := s.redeployProjectServices(r.Context(), projectID); err != nil {
-		s.logger.Error("redeploying services after project env var update", "err", err, "project_id", projectID)
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarUpdate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &envVarID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
-	jsonResponse(w, http.StatusOK, ev)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }
 
 func (s *Server) handleDeleteProjectEnvVar(w http.ResponseWriter, r *http.Request) {
@@ -102,16 +134,20 @@ func (s *Server) handleDeleteProjectEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.EnvVarService.DeleteEnvVar(r.Context(), envVarID); err != nil {
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarDelete,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &envVarID,
+		Payload:    json.RawMessage(`{}`),
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if err := s.redeployProjectServices(r.Context(), projectID); err != nil {
-		s.logger.Error("redeploying services after project env var delete", "err", err, "project_id", projectID)
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }
 
 // --- Service-scoped handlers ---
@@ -130,18 +166,35 @@ func (s *Server) handleCreateServiceEnvVar(w http.ResponseWriter, r *http.Reques
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
 
-	ev, err := s.EnvVarService.CreateEnvVar(r.Context(), deploykit.EnvVarScopeService, serviceID, req)
+	payload, err := json.Marshal(deploykit.EnvVarCreatePayload{
+		Scope: deploykit.EnvVarScopeService,
+		Key:   req.Key,
+		Value: req.Value,
+	})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if err := s.redeployService(r.Context(), serviceID); err != nil {
-		s.logger.Error("redeploying service after env var create", "err", err, "service_id", serviceID)
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarCreate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &serviceID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
-	jsonResponse(w, http.StatusCreated, ev)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusCreated, pc)
 }
 
 func (s *Server) handleListServiceEnvVars(w http.ResponseWriter, r *http.Request) {
@@ -187,18 +240,31 @@ func (s *Server) handleUpdateServiceEnvVar(w http.ResponseWriter, r *http.Reques
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+	if req.Value == nil {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "value is required."))
+		return
+	}
 
-	ev, err := s.EnvVarService.UpdateEnvVar(r.Context(), envVarID, req)
+	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{Value: *req.Value})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if err := s.redeployService(r.Context(), serviceID); err != nil {
-		s.logger.Error("redeploying service after env var update", "err", err, "service_id", serviceID)
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarUpdate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &envVarID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
-	jsonResponse(w, http.StatusOK, ev)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }
 
 func (s *Server) handleDeleteServiceEnvVar(w http.ResponseWriter, r *http.Request) {
@@ -221,16 +287,20 @@ func (s *Server) handleDeleteServiceEnvVar(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if err := s.EnvVarService.DeleteEnvVar(r.Context(), envVarID); err != nil {
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarDelete,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &envVarID,
+		Payload:    json.RawMessage(`{}`),
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if err := s.redeployService(r.Context(), serviceID); err != nil {
-		s.logger.Error("redeploying service after env var delete", "err", err, "service_id", serviceID)
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }
 
 // --- Helpers ---
@@ -248,89 +318,12 @@ func (s *Server) verifyServiceInProject(ctx context.Context, projectID, serviceI
 	return nil
 }
 
-// redeployProjectServices creates a new deployment for every service in the
-// project that currently has an active deployment, then triggers the
-// reconciler once. Services without an active deployment are skipped — they
-// have no image to redeploy with and will pick up env vars on their first
-// manual deploy.
-func (s *Server) redeployProjectServices(ctx context.Context, projectID string) error {
-	services, _, err := s.ServiceService.ListServices(ctx, deploykit.ServiceFilter{
-		ProjectID: &projectID,
-		Limit:     100,
-	})
-	if err != nil {
-		return fmt.Errorf("listing services for project %s: %w", projectID, err)
+// currentUserID returns the authenticated user's ID (or nil if unauthenticated).
+// Pending change rows record who staged the edit.
+func currentUserID(ctx context.Context) *string {
+	u := UserFromContext(ctx)
+	if u == nil {
+		return nil
 	}
-
-	anyRedeployed := false
-	for _, svc := range services {
-		redeployed, err := s.redeployServiceNoTrigger(ctx, svc.ID)
-		if err != nil {
-			return err
-		}
-		anyRedeployed = anyRedeployed || redeployed
-	}
-
-	if anyRedeployed && s.Reconciler != nil {
-		s.Reconciler.Trigger()
-	}
-	return nil
-}
-
-// redeployService creates a new deployment for a single service (if it has an
-// active deployment) using the current resolved env var set, and triggers the
-// reconciler.
-func (s *Server) redeployService(ctx context.Context, serviceID string) error {
-	redeployed, err := s.redeployServiceNoTrigger(ctx, serviceID)
-	if err != nil {
-		return err
-	}
-	if redeployed && s.Reconciler != nil {
-		s.Reconciler.Trigger()
-	}
-	return nil
-}
-
-// redeployServiceNoTrigger creates a new deployment snapshot for the service
-// based on its current active deployment, but with freshly resolved env vars.
-// Returns (true, nil) if a new deployment was created. Does not trigger the
-// reconciler — callers batch that.
-func (s *Server) redeployServiceNoTrigger(ctx context.Context, serviceID string) (bool, error) {
-	svc, err := s.ServiceService.GetService(ctx, serviceID)
-	if err != nil {
-		return false, fmt.Errorf("getting service %s: %w", serviceID, err)
-	}
-	if svc.ActiveDeploymentID == nil {
-		return false, nil
-	}
-
-	active, err := s.DeploymentService.GetDeployment(ctx, *svc.ActiveDeploymentID)
-	if err != nil {
-		return false, fmt.Errorf("getting active deployment %s: %w", *svc.ActiveDeploymentID, err)
-	}
-
-	resolved, err := s.EnvVarService.ResolveForService(ctx, serviceID)
-	if err != nil {
-		return false, fmt.Errorf("resolving env vars for service %s: %w", serviceID, err)
-	}
-
-	newDep, err := s.DeploymentService.CreateDeployment(ctx, serviceID, deploykit.DeploymentCreate{
-		Image:     active.Image,
-		EnvVars:   resolved,
-		Ports:     active.Ports,
-		Resources: active.Resources,
-		Replicas:  active.Replicas,
-	})
-	if err != nil {
-		return false, fmt.Errorf("creating redeploy for service %s: %w", serviceID, err)
-	}
-
-	if s.EventBus != nil {
-		s.EventBus.Publish(ctx, deploykit.Event{
-			Type:      deploykit.EventDeploymentCreated,
-			ProjectID: svc.ProjectID,
-			Payload:   deploykit.DeploymentCreatedPayload{Deployment: newDep},
-		})
-	}
-	return true, nil
+	return &u.ID
 }

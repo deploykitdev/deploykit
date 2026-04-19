@@ -53,6 +53,72 @@ func (h *canvasHub) unsubscribe() {
 	}
 }
 
+// broadcastToProject sends a pre-encoded message to all clients in a project's
+// room. No-op if the room is empty or missing. Used by HTTP handlers that
+// mutate project state outside of WebSocket messages.
+func (h *canvasHub) broadcastToProject(projectID string, msg []byte) {
+	h.mu.RLock()
+	room, ok := h.rooms[projectID]
+	h.mu.RUnlock()
+	if !ok {
+		return
+	}
+	room.broadcastAll(msg)
+}
+
+// broadcastPendingChangeAdded fans out a newly-appended change log entry.
+func (h *canvasHub) broadcastPendingChangeAdded(projectID string, pc *deploykit.PendingChange) {
+	payload, err := json.Marshal(pc)
+	if err != nil {
+		return
+	}
+	msg, err := json.Marshal(wsMessage{Type: "pending-change:added", Payload: payload})
+	if err != nil {
+		return
+	}
+	h.broadcastToProject(projectID, msg)
+}
+
+// broadcastPendingChangesRemoved announces that specific change log entries
+// have been removed (e.g. when a pending-added service's canvas node is
+// deleted before deploy). Clients drop the matching IDs from their cache.
+func (h *canvasHub) broadcastPendingChangesRemoved(projectID string, ids []string) {
+	payload, err := json.Marshal(map[string]any{"ids": ids})
+	if err != nil {
+		return
+	}
+	msg, err := json.Marshal(wsMessage{Type: "pending-changes:removed", Payload: payload})
+	if err != nil {
+		return
+	}
+	h.broadcastToProject(projectID, msg)
+}
+
+// broadcastPendingCleared announces that the project's pending change log was
+// cleared without applying.
+func (h *canvasHub) broadcastPendingCleared(projectID string) {
+	msg, err := json.Marshal(wsMessage{Type: "pending-changes:cleared", Payload: json.RawMessage(`{}`)})
+	if err != nil {
+		return
+	}
+	h.broadcastToProject(projectID, msg)
+}
+
+// broadcastPendingApplied announces that a deploy has landed. Clients should
+// refetch applied state (services, env vars) since multiple resources may
+// have changed atomically.
+func (h *canvasHub) broadcastPendingApplied(projectID string, result *deploykit.ApplyResult) {
+	payload, err := json.Marshal(result)
+	if err != nil {
+		return
+	}
+	msg, err := json.Marshal(wsMessage{Type: "pending-changes:applied", Payload: payload})
+	if err != nil {
+		return
+	}
+	h.broadcastToProject(projectID, msg)
+}
+
 // dispatchEvent routes a single bus event to the matching project room.
 func (h *canvasHub) dispatchEvent(evt deploykit.Event) {
 	if evt.ProjectID == "" {
@@ -305,12 +371,14 @@ type canvasClient struct {
 	send     chan []byte
 
 	// Dependencies for handling messages.
-	room              *projectRoom
-	projectID         string
-	canvasService     deploykit.CanvasService
-	serviceService    deploykit.ServiceService
-	deploymentService deploykit.DeploymentService
-	reconciler        Triggerable
-	eventBus          deploykit.EventBus
-	logger            *slog.Logger
+	hub                  *canvasHub
+	room                 *projectRoom
+	projectID            string
+	canvasService        deploykit.CanvasService
+	serviceService       deploykit.ServiceService
+	deploymentService    deploykit.DeploymentService
+	pendingChangeService deploykit.PendingChangeService
+	reconciler           Triggerable
+	eventBus             deploykit.EventBus
+	logger               *slog.Logger
 }

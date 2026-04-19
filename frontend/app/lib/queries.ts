@@ -128,6 +128,39 @@ export interface EnvVar {
   updated_at: string;
 }
 
+// Pending change op codes — match the backend's deploykit.PendingChangeOp.
+export type PendingChangeOp =
+  | "project.update"
+  | "service.create"
+  | "service.update"
+  | "service.delete"
+  | "env_var.create"
+  | "env_var.update"
+  | "env_var.delete";
+
+export type PendingChangeTarget = "project" | "service" | "env_var";
+
+export interface PendingChange {
+  id: string;
+  project_id: string;
+  seq: number;
+  op: PendingChangeOp;
+  target_type: PendingChangeTarget;
+  target_id?: string | null;
+  target_temp_id?: string | null;
+  parent_temp_id?: string | null;
+  payload: unknown;
+  user_id?: string | null;
+  created_at: string;
+}
+
+export interface ApplyResult {
+  applied_count: number;
+  temp_id_to_service_id: Record<string, string>;
+  redeployed_service_ids: string[];
+  created_deployments: Deployment[];
+}
+
 export const queryKeys = {
   projects: ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
@@ -141,6 +174,8 @@ export const queryKeys = {
     ["projects", projectId, "env-vars"] as const,
   serviceEnvVars: (projectId: string, serviceId: string) =>
     ["projects", projectId, "services", serviceId, "env-vars"] as const,
+  pendingChanges: (projectId: string) =>
+    ["projects", projectId, "pending-changes"] as const,
   users: ["users"] as const,
   systemAbout: ["system", "about"] as const,
   systemStatus: ["system", "status"] as const,
@@ -192,13 +227,25 @@ export function useUpdateService(projectId: string, serviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (update: ServiceUpdate) =>
-      api<Service>(`/projects/${projectId}/services/${serviceId}`, {
+      api<PendingChange>(`/projects/${projectId}/services/${serviceId}`, {
         method: "PATCH",
         body: JSON.stringify(update),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.service(projectId, serviceId) });
-      qc.invalidateQueries({ queryKey: queryKeys.projectServices(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+export function useDeleteService(projectId: string, serviceId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<PendingChange>(`/projects/${projectId}/services/${serviceId}`, {
+        method: "DELETE",
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
     },
   });
 }
@@ -234,13 +281,12 @@ export function useUpdateProject(id: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (update: { name?: string }) =>
-      api<Project>(`/projects/${id}`, {
+      api<PendingChange>(`/projects/${id}`, {
         method: "PATCH",
         body: JSON.stringify(update),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.project(id) });
-      qc.invalidateQueries({ queryKey: queryKeys.projects });
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(id) });
     },
   });
 }
@@ -339,27 +385,10 @@ export function useDeleteUser() {
 }
 
 // --- Env vars ---
-
-// Invalidates every "deployments" query under a project. Env var mutations
-// cause the backend to create new deployments for the affected services, so
-// any open deployments list in the UI needs a refresh.
-function invalidateProjectDeployments(
-  qc: ReturnType<typeof useQueryClient>,
-  projectId: string,
-) {
-  qc.invalidateQueries({
-    predicate: (q) => {
-      const key = q.queryKey;
-      return (
-        Array.isArray(key) &&
-        key[0] === "projects" &&
-        key[1] === projectId &&
-        key[2] === "services" &&
-        key[4] === "deployments"
-      );
-    },
-  });
-}
+//
+// All env var mutations now stage a pending change on the backend. The
+// applied env_vars list endpoints still reflect committed values; the
+// UI layers pending entries on top for display.
 
 export function useProjectEnvVars(projectId: string) {
   return useQuery({
@@ -375,13 +404,12 @@ export function useCreateProjectEnvVar(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { key: string; value: string }) =>
-      api<EnvVar>(`/projects/${projectId}/env-vars`, {
+      api<PendingChange>(`/projects/${projectId}/env-vars`, {
         method: "POST",
         body: JSON.stringify(data),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
-      invalidateProjectDeployments(qc, projectId);
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
     },
   });
 }
@@ -390,13 +418,12 @@ export function useUpdateProjectEnvVar(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, value }: { id: string; value: string }) =>
-      api<EnvVar>(`/projects/${projectId}/env-vars/${id}`, {
+      api<PendingChange>(`/projects/${projectId}/env-vars/${id}`, {
         method: "PATCH",
         body: JSON.stringify({ value }),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
-      invalidateProjectDeployments(qc, projectId);
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
     },
   });
 }
@@ -405,10 +432,11 @@ export function useDeleteProjectEnvVar(projectId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      api(`/projects/${projectId}/env-vars/${id}`, { method: "DELETE" }),
+      api<PendingChange>(`/projects/${projectId}/env-vars/${id}`, {
+        method: "DELETE",
+      }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
-      invalidateProjectDeployments(qc, projectId);
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
     },
   });
 }
@@ -420,6 +448,8 @@ export function useServiceEnvVars(projectId: string, serviceId: string) {
       api<{ data: EnvVar[] }>(
         `/projects/${projectId}/services/${serviceId}/env-vars`,
       ).then((r) => r.data ?? []),
+    // Pending-added services don't have env vars in the applied table yet.
+    enabled: !serviceId.startsWith("pending:"),
   });
 }
 
@@ -427,17 +457,15 @@ export function useCreateServiceEnvVar(projectId: string, serviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: { key: string; value: string }) =>
-      api<EnvVar>(`/projects/${projectId}/services/${serviceId}/env-vars`, {
-        method: "POST",
-        body: JSON.stringify(data),
-      }),
+      api<PendingChange>(
+        `/projects/${projectId}/services/${serviceId}/env-vars`,
+        {
+          method: "POST",
+          body: JSON.stringify(data),
+        },
+      ),
     onSuccess: () => {
-      qc.invalidateQueries({
-        queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
-      });
-      qc.invalidateQueries({
-        queryKey: queryKeys.deployments(projectId, serviceId),
-      });
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
     },
   });
 }
@@ -446,7 +474,7 @@ export function useUpdateServiceEnvVar(projectId: string, serviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, value }: { id: string; value: string }) =>
-      api<EnvVar>(
+      api<PendingChange>(
         `/projects/${projectId}/services/${serviceId}/env-vars/${id}`,
         {
           method: "PATCH",
@@ -454,12 +482,7 @@ export function useUpdateServiceEnvVar(projectId: string, serviceId: string) {
         },
       ),
     onSuccess: () => {
-      qc.invalidateQueries({
-        queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
-      });
-      qc.invalidateQueries({
-        queryKey: queryKeys.deployments(projectId, serviceId),
-      });
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
     },
   });
 }
@@ -468,15 +491,94 @@ export function useDeleteServiceEnvVar(projectId: string, serviceId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
-      api(`/projects/${projectId}/services/${serviceId}/env-vars/${id}`, {
+      api<PendingChange>(
+        `/projects/${projectId}/services/${serviceId}/env-vars/${id}`,
+        {
+          method: "DELETE",
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+// --- Pending changes ---
+
+export function usePendingChanges(projectId: string) {
+  return useQuery({
+    queryKey: queryKeys.pendingChanges(projectId),
+    queryFn: () =>
+      api<{ data: PendingChange[] }>(
+        `/projects/${projectId}/pending-changes`,
+      ).then((r) => r.data ?? []),
+  });
+}
+
+export function useAddPendingServiceEnvVar(projectId: string, tempId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { key: string; value: string }) =>
+      api<PendingChange>(
+        `/projects/${projectId}/pending-services/${tempId}/env-vars`,
+        {
+          method: "POST",
+          body: JSON.stringify(data),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+// useRemovePendingChange backs out a single pending change entry. Used for
+// env var edits on pending-added services; the bottom panel still owns the
+// all-or-nothing Discard for everything else.
+export function useRemovePendingChange(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (changeId: string) =>
+      api(`/projects/${projectId}/pending-changes/${changeId}`, {
         method: "DELETE",
       }),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+export function useDiscardPendingChanges(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api(`/projects/${projectId}/pending-changes`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+// useDeployProject applies every pending change atomically and triggers
+// reconciliation. On success it invalidates all project-scoped data so the
+// UI reloads applied state.
+export function useDeployProject(projectId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<ApplyResult>(`/projects/${projectId}/deploy`, { method: "POST" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.project(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.projectServices(projectId) });
+      qc.invalidateQueries({ queryKey: queryKeys.projectEnvVars(projectId) });
       qc.invalidateQueries({
-        queryKey: queryKeys.serviceEnvVars(projectId, serviceId),
-      });
-      qc.invalidateQueries({
-        queryKey: queryKeys.deployments(projectId, serviceId),
+        predicate: (q) => {
+          const key = q.queryKey;
+          return (
+            Array.isArray(key) && key[0] === "projects" && key[1] === projectId
+          );
+        },
       });
     },
   });

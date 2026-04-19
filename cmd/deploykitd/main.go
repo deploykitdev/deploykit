@@ -84,6 +84,7 @@ func (m *Main) Run(ctx context.Context) error {
 	containerService := sqlite.NewContainerService(m.DB)
 	canvasService := sqlite.NewCanvasService(m.DB)
 	envVarService := sqlite.NewEnvVarService(m.DB)
+	pendingChangeService := sqlite.NewPendingChangeService(m.DB)
 	systemService := sysinfo.NewService(m.DockerClient, m.Logger, m.Config.DBPath, "dev", startedAt)
 
 	// Initialize event bus (in-process pub/sub).
@@ -108,6 +109,7 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.CanvasService = canvasService
 	m.HTTPServer.SystemService = systemService
 	m.HTTPServer.EnvVarService = envVarService
+	m.HTTPServer.PendingChangeService = pendingChangeService
 	m.HTTPServer.LogStreamer = m.DockerClient
 
 	if err := m.HTTPServer.Open(); err != nil {

@@ -85,7 +85,7 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	serviceID := r.PathValue("serviceId")
 
-	// Verify service belongs to project before updating.
+	// Verify service belongs to project before staging.
 	existing, err := s.ServiceService.GetService(r.Context(), serviceID)
 	if err != nil {
 		s.errorResponse(w, r, err)
@@ -101,29 +101,40 @@ func (s *Server) handleUpdateService(w http.ResponseWriter, r *http.Request) {
 		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
 		return
 	}
+	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
 
-	svc, err := s.ServiceService.UpdateService(r.Context(), serviceID, req)
+	payload, err := json.Marshal(deploykit.ServiceUpdatePayload{
+		Name:    req.Name,
+		IconURL: req.IconURL,
+	})
 	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if s.EventBus != nil {
-		s.EventBus.Publish(r.Context(), deploykit.Event{
-			Type:      deploykit.EventServiceUpdated,
-			ProjectID: projectID,
-			Payload:   deploykit.ServiceUpdatedPayload{Service: svc},
-		})
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceUpdate,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &serviceID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
 	}
 
-	jsonResponse(w, http.StatusOK, svc)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }
 
 func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 	projectID := r.PathValue("projectId")
 	serviceID := r.PathValue("serviceId")
 
-	// Verify service belongs to project before deleting.
 	existing, err := s.ServiceService.GetService(r.Context(), serviceID)
 	if err != nil {
 		s.errorResponse(w, r, err)
@@ -134,22 +145,18 @@ func (s *Server) handleDeleteService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.ServiceService.DeleteService(r.Context(), serviceID); err != nil {
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceDelete,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &serviceID,
+		Payload:    json.RawMessage(`{}`),
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
 		s.errorResponse(w, r, err)
 		return
 	}
 
-	if s.EventBus != nil {
-		s.EventBus.Publish(r.Context(), deploykit.Event{
-			Type:      deploykit.EventServiceDeleted,
-			ProjectID: projectID,
-			Payload:   deploykit.ServiceDeletedPayload{ServiceID: serviceID},
-		})
-	}
-
-	if s.Reconciler != nil {
-		s.Reconciler.Trigger()
-	}
-
-	w.WriteHeader(http.StatusNoContent)
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
 }

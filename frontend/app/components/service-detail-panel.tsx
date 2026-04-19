@@ -1,8 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Panel } from "@xyflow/react";
 import { XIcon } from "lucide-react";
 import { Tabs, TabList, Tab, TabPanel } from "./ui/tabs";
-import { useService, useDeployments } from "@/lib/queries";
+import {
+  useDeployments,
+  usePendingChanges,
+  useService,
+  type PendingChange,
+} from "@/lib/queries";
 import { ServiceDeploymentsTab } from "./service-deployments-tab";
 import { ServiceVariablesTab } from "./service-variables-tab";
 import { ServiceMetricsTab } from "./service-metrics-tab";
@@ -23,7 +28,16 @@ export function ServiceDetailPanel({
 }: ServiceDetailPanelProps) {
   const serviceQuery = useService(projectId, serviceId);
   const deploymentsQuery = useDeployments(projectId, serviceId);
+  const { data: pendingChanges } = usePendingChanges(projectId);
   const [tab, setTab] = useState("deployments");
+
+  // Merge staged service.update entries into a single "target" override so
+  // the header reflects pending renames / icon changes before deploy.
+  const override = useMemo(
+    () => collectOverride(pendingChanges, serviceId),
+    [pendingChanges, serviceId],
+  );
+  const pendingDelete = override?.pendingDelete ?? false;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -34,7 +48,11 @@ export function ServiceDetailPanel({
   }, [onClose]);
 
   const service = serviceQuery.data;
-  const name = service?.name ?? "Service";
+  const name = override?.name ?? service?.name ?? "Service";
+  const effectiveIconUrl =
+    override?.iconUrlSet !== undefined
+      ? override.iconUrlSet
+      : service?.icon_url ?? null;
   const activeDeploymentId = service?.active_deployment_id ?? null;
   const activeImage = service?.active_deployment?.image ?? null;
 
@@ -48,9 +66,17 @@ export function ServiceDetailPanel({
           <ServiceIconEditor
             projectId={projectId}
             serviceId={serviceId}
-            iconUrl={service?.icon_url ?? null}
+            iconUrl={effectiveIconUrl}
           />
-          <h2 className="truncate text-lg font-semibold">{name}</h2>
+          <h2
+            className={
+              pendingDelete
+                ? "truncate text-lg font-semibold line-through decoration-destructive/70"
+                : "truncate text-lg font-semibold"
+            }
+          >
+            {name}
+          </h2>
         </div>
         <button
           type="button"
@@ -116,4 +142,47 @@ export function ServiceDetailPanel({
       </Tabs>
     </Panel>
   );
+}
+
+interface ServiceOverride {
+  name?: string;
+  // present when an update staged a change to the icon. null = clear.
+  iconUrlSet?: string | null;
+  pendingDelete?: boolean;
+}
+
+function collectOverride(
+  changes: PendingChange[] | undefined,
+  serviceId: string,
+): ServiceOverride | undefined {
+  if (!changes) return undefined;
+  let out: ServiceOverride | undefined;
+  for (const c of changes) {
+    if (c.target_id !== serviceId) continue;
+    if (c.op === "service.update") {
+      const payload = parseObject(c.payload);
+      if (!out) out = {};
+      if (typeof payload.name === "string") out.name = payload.name;
+      if ("icon_url" in payload) {
+        const raw = payload.icon_url;
+        out.iconUrlSet = typeof raw === "string" && raw !== "" ? raw : null;
+      }
+    } else if (c.op === "service.delete") {
+      if (!out) out = {};
+      out.pendingDelete = true;
+    }
+  }
+  return out;
+}
+
+function parseObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
 }

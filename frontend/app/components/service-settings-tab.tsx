@@ -1,7 +1,11 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { ApiError } from "@/lib/api";
-import { useService, useUpdateService } from "@/lib/queries";
+import {
+  usePendingChanges,
+  useService,
+  useUpdateService,
+} from "@/lib/queries";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Field, FieldError, FieldLabel } from "./ui/field";
@@ -24,18 +28,39 @@ export function ServiceSettingsTab({
   serviceId,
 }: ServiceSettingsTabProps) {
   const { data: service } = useService(projectId, serviceId);
+  const { data: pendingChanges } = usePendingChanges(projectId);
   const updateService = useUpdateService(projectId, serviceId);
-  const [name, setName] = useState(service?.name ?? "");
+
+  // The effective name is the applied name with the latest staged rename
+  // layered on top. Staging another rename to the same value is a no-op.
+  const pendingName = useMemo(() => {
+    if (!pendingChanges) return undefined;
+    let latest: string | undefined;
+    for (const c of pendingChanges) {
+      if (c.op !== "service.update" || c.target_id !== serviceId) continue;
+      const p = c.payload;
+      if (p && typeof p === "object" && "name" in p) {
+        const v = (p as { name?: unknown }).name;
+        if (typeof v === "string") latest = v;
+      }
+    }
+    return latest;
+  }, [pendingChanges, serviceId]);
+
+  const effectiveName = pendingName ?? service?.name ?? "";
+  const [name, setName] = useState(effectiveName);
   const [error, setError] = useState("");
 
+  // Keep the input synced with the effective name when server state or
+  // pending changes shift (e.g. a collaborator stages a rename).
   useEffect(() => {
-    if (service?.name) setName(service.name);
-  }, [service?.name]);
+    setName(effectiveName);
+  }, [effectiveName]);
 
   if (!service) return null;
 
   const trimmed = name.trim();
-  const dirty = trimmed !== service.name;
+  const dirty = trimmed !== effectiveName;
   const canSubmit = dirty && trimmed !== "" && !updateService.isPending;
 
   async function handleSubmit(e: FormEvent) {
@@ -45,7 +70,9 @@ export function ServiceSettingsTab({
 
     try {
       await updateService.mutateAsync({ name: trimmed });
-      toast.success("Service renamed");
+      toast.success("Rename staged", {
+        description: "Deploy the project to apply the change.",
+      });
     } catch (err) {
       if (err instanceof ApiError) {
         try {

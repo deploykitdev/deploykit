@@ -12,7 +12,12 @@ import { toast } from "sonner";
 import { Link } from "react-router";
 import { SettingsIcon } from "lucide-react";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
-import { useProjectServices, type Service } from "@/lib/queries";
+import {
+  usePendingChanges,
+  useProjectServices,
+  type PendingChange,
+  type Service,
+} from "@/lib/queries";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
 import { CanvasContextMenu } from "./canvas-context-menu";
@@ -22,6 +27,8 @@ import { AddServiceForm } from "./add-service-form";
 import { DraftingServiceGhost } from "./drafting-service-ghost";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
 import { ServiceDetailPanel } from "./service-detail-panel";
+import { PendingChangesPanel } from "./pending-changes-panel";
+import { PendingServicePanel } from "./pending-service-panel";
 
 const nodeTypes = {
   service: ServiceNode,
@@ -67,11 +74,20 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   } = useCanvasSync(projectId);
 
   const { data: servicesData } = useProjectServices(projectId);
+  const { data: pendingChanges } = usePendingChanges(projectId);
   const servicesById = useMemo(() => {
     const map = new Map<string, Service>();
     for (const s of servicesData ?? []) map.set(s.id, s);
     return map;
   }, [servicesData]);
+
+  // Collapse the log into per-service overrides (latest-write-wins) so the
+  // canvas shows staged renames / icon changes before deploy. Also tracks
+  // pending-delete flags for visual decoration.
+  const pendingOverridesByServiceId = useMemo(
+    () => collectServiceOverrides(pendingChanges),
+    [pendingChanges],
+  );
 
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -120,6 +136,11 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>(
     null,
   );
+  // Pending-added services have no backing service row yet; track them by
+  // canvas node ID (= the pending service.create target_temp_id).
+  const [selectedPendingNodeId, setSelectedPendingNodeId] = useState<
+    string | null
+  >(null);
 
   // Close the detail panel if the selected service is no longer on the canvas
   // (e.g. it was deleted via context menu or by another user).
@@ -134,11 +155,29 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     if (!stillPresent) setSelectedServiceId(null);
   }, [nodes, selectedServiceId]);
 
+  useEffect(() => {
+    if (!selectedPendingNodeId) return;
+    const stillPresent = nodes.some(
+      (n) => n.type === "service" && n.id === selectedPendingNodeId,
+    );
+    if (!stillPresent) setSelectedPendingNodeId(null);
+  }, [nodes, selectedPendingNodeId]);
+
   const onNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
       if (node.type !== "service") return;
       const data = node.data as ServiceNodeData | undefined;
-      if (data?.serviceId) setSelectedServiceId(data.serviceId);
+      // Pending-deleted nodes are non-interactive — the service is on its way
+      // out and editing it makes no sense. The bottom panel is the place to
+      // cancel the deletion by discarding.
+      if (data?.pendingDelete) return;
+      if (data?.serviceId) {
+        setSelectedPendingNodeId(null);
+        setSelectedServiceId(data.serviceId);
+      } else {
+        setSelectedServiceId(null);
+        setSelectedPendingNodeId(node.id);
+      }
     },
     [],
   );
@@ -147,14 +186,15 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   // PANEL_RESERVED matches the panel's effective width (w-[520px] + gutters).
   // Only re-run when the selected id changes so ongoing node drags don't retrigger.
   useEffect(() => {
-    if (!selectedServiceId) return;
+    if (!selectedServiceId && !selectedPendingNodeId) return;
     const PANEL_RESERVED = 540;
-    const target = getNodes().find(
-      (n) =>
-        n.type === "service" &&
-        (n.data as ServiceNodeData | undefined)?.serviceId ===
-          selectedServiceId,
-    );
+    const target = getNodes().find((n) => {
+      if (n.type !== "service") return false;
+      if (selectedPendingNodeId) return n.id === selectedPendingNodeId;
+      return (
+        (n.data as ServiceNodeData | undefined)?.serviceId === selectedServiceId
+      );
+    });
     if (!target) return;
     const width = target.measured?.width ?? 256;
     const height = target.measured?.height ?? 80;
@@ -165,7 +205,13 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       zoom,
       duration: 400,
     });
-  }, [selectedServiceId, getNodes, getViewport, setCenter]);
+  }, [
+    selectedServiceId,
+    selectedPendingNodeId,
+    getNodes,
+    getViewport,
+    setCenter,
+  ]);
 
   const onPaneContextMenu = useCallback(
     (event: MouseEvent | React.MouseEvent) => {
@@ -216,7 +262,12 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   }, [menu, openServiceDraft]);
 
   const decoratedNodes = useMemo<Node[]>(() => {
-    if (servicesById.size === 0) return nodes;
+    if (
+      servicesById.size === 0 &&
+      pendingOverridesByServiceId.size === 0
+    ) {
+      return nodes;
+    }
     return nodes.map((n) => {
       if (n.type !== "service") return n;
       const data = n.data as ServiceNodeData | undefined;
@@ -224,15 +275,21 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       if (!serviceId) return n;
       const svc = servicesById.get(serviceId);
       if (!svc) return n;
+      const override = pendingOverridesByServiceId.get(serviceId);
       const nextStatus = svc.status;
       const nextImage = svc.active_deployment?.image;
-      const nextIconUrl = svc.icon_url ?? undefined;
-      const nextLabel = svc.name;
+      const nextIconUrl =
+        override?.iconUrlSet !== undefined
+          ? override.iconUrlSet ?? undefined
+          : svc.icon_url ?? undefined;
+      const nextLabel = override?.name ?? svc.name;
+      const nextPendingDelete = override?.pendingDelete ?? false;
       if (
         data?.status === nextStatus &&
         data?.image === nextImage &&
         data?.iconUrl === nextIconUrl &&
-        data?.label === nextLabel
+        data?.label === nextLabel &&
+        (data?.pendingDelete ?? false) === nextPendingDelete
       ) {
         return n;
       }
@@ -244,10 +301,22 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
           status: nextStatus,
           image: nextImage,
           iconUrl: nextIconUrl,
+          pendingDelete: nextPendingDelete,
         },
       };
     });
-  }, [nodes, servicesById]);
+  }, [nodes, servicesById, pendingOverridesByServiceId]);
+
+  // Close the detail panel if the selected service gets marked for deletion.
+  // Otherwise the user could edit a service they're about to drop.
+  useEffect(() => {
+    if (
+      selectedServiceId &&
+      pendingOverridesByServiceId.get(selectedServiceId)?.pendingDelete
+    ) {
+      setSelectedServiceId(null);
+    }
+  }, [selectedServiceId, pendingOverridesByServiceId]);
 
   const composedNodes = useMemo<Node[]>(() => {
     if (remoteDrafts.size === 0 && localDrafts.size === 0) return decoratedNodes;
@@ -346,7 +415,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
             <SettingsIcon className="size-4" />
           </Link>
         </Panel>
-        {selectedServiceId ? null : (
+        {selectedServiceId || selectedPendingNodeId ? null : (
           <Panel position="top-right">
             <AvatarStack users={connectedUsers} />
           </Panel>
@@ -356,6 +425,13 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
             projectId={projectId}
             serviceId={selectedServiceId}
             onClose={() => setSelectedServiceId(null)}
+          />
+        ) : null}
+        {selectedPendingNodeId ? (
+          <PendingServicePanel
+            projectId={projectId}
+            nodeId={selectedPendingNodeId}
+            onClose={() => setSelectedPendingNodeId(null)}
           />
         ) : null}
         <CursorTracker onCursorMove={sendCursorMove} />
@@ -374,8 +450,56 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         onClose={closeNodeMenu}
         onDelete={handleDeleteNode}
       />
+      <PendingChangesPanel projectId={projectId} />
     </div>
   );
+}
+
+// Per-service override distilled from the pending change log. `iconUrlSet`
+// being present (even with null) means an update was staged that explicitly
+// touched the icon — null means clear, string means set; undefined means no
+// staged icon change, so applied state should show.
+interface ServiceOverride {
+  name?: string;
+  iconUrlSet?: string | null;
+  pendingDelete?: boolean;
+}
+
+function collectServiceOverrides(
+  changes: PendingChange[] | undefined,
+): Map<string, ServiceOverride> {
+  const out = new Map<string, ServiceOverride>();
+  if (!changes) return out;
+  for (const c of changes) {
+    if (c.op === "service.update" && c.target_id) {
+      const payload = parseObject(c.payload);
+      const existing = out.get(c.target_id) ?? {};
+      if (typeof payload.name === "string") existing.name = payload.name;
+      if ("icon_url" in payload) {
+        const raw = payload.icon_url;
+        existing.iconUrlSet =
+          typeof raw === "string" && raw !== "" ? raw : null;
+      }
+      out.set(c.target_id, existing);
+    } else if (c.op === "service.delete" && c.target_id) {
+      const existing = out.get(c.target_id) ?? {};
+      existing.pendingDelete = true;
+      out.set(c.target_id, existing);
+    }
+  }
+  return out;
+}
+
+function parseObject(raw: unknown): Record<string, unknown> {
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+  return {};
 }
 
 function CursorTracker({
