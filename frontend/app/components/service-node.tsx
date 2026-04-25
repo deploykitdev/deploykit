@@ -132,9 +132,23 @@ export function ServiceNode({ data, selected }: NodeProps) {
         ) : null}
       </div>
 
+      {/* Hidden handles on every side so floating edges can anchor to the
+          closest perimeter point regardless of relative node positions. */}
       <Handle
         type="target"
         position={Position.Left}
+        className="!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !opacity-0"
+      />
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="t-top"
+        className="!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !opacity-0"
+      />
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="t-bottom"
         className="!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !opacity-0"
       />
 
@@ -204,6 +218,18 @@ export function ServiceNode({ data, selected }: NodeProps) {
       <Handle
         type="source"
         position={Position.Right}
+        className="!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !opacity-0"
+      />
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="s-top"
+        className="!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !opacity-0"
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="s-bottom"
         className="!h-0 !w-0 !min-h-0 !min-w-0 !border-0 !bg-transparent !opacity-0"
       />
     </div>

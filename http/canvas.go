@@ -488,6 +488,11 @@ func (c *canvasClient) handleEdgeUpsert(ctx context.Context, payload json.RawMes
 		return
 	}
 
+	if isManagedEdgeData(upsert.Data) {
+		c.sendError("This edge is managed by the system and cannot be edited.")
+		return
+	}
+
 	edge, err := c.canvasService.UpsertEdge(ctx, c.projectID, upsert)
 	if err != nil {
 		c.logger.Error("upserting canvas edge", "err", err)
@@ -509,6 +514,17 @@ func (c *canvasClient) handleEdgeDelete(ctx context.Context, payload json.RawMes
 		return
 	}
 
+	managed, err := c.isManagedEdgeID(ctx, req.ID)
+	if err != nil {
+		c.logger.Error("checking managed edge", "err", err)
+		c.sendError("Failed to delete edge.")
+		return
+	}
+	if managed {
+		c.sendError("This edge is managed by the system and cannot be deleted.")
+		return
+	}
+
 	if err := c.canvasService.DeleteEdge(ctx, c.projectID, req.ID); err != nil {
 		c.logger.Error("deleting canvas edge", "err", err)
 		c.sendError("Failed to delete edge.")
@@ -518,6 +534,37 @@ func (c *canvasClient) handleEdgeDelete(ctx context.Context, payload json.RawMes
 	response, _ := json.Marshal(map[string]string{"id": req.ID})
 	msg, _ := json.Marshal(wsMessage{Type: "edge:deleted", Payload: response})
 	c.room.broadcastAll(msg)
+}
+
+// isManagedEdgeData reports whether the edge.Data JSON marks this edge as
+// system-managed (e.g. an env-ref edge driven by env var references).
+func isManagedEdgeData(data string) bool {
+	if data == "" {
+		return false
+	}
+	var meta struct {
+		Managed string `json:"managed"`
+	}
+	if err := json.Unmarshal([]byte(data), &meta); err != nil {
+		return false
+	}
+	return meta.Managed != ""
+}
+
+// isManagedEdgeID looks up the existing edge to determine whether it is
+// system-managed. Edges that don't exist are treated as non-managed so the
+// downstream delete still produces the regular ENOTFOUND.
+func (c *canvasClient) isManagedEdgeID(ctx context.Context, edgeID string) (bool, error) {
+	_, edges, err := c.canvasService.GetCanvasState(ctx, c.projectID)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range edges {
+		if e.ID == edgeID {
+			return isManagedEdgeData(e.Data), nil
+		}
+	}
+	return false, nil
 }
 
 func (c *canvasClient) handleCursorMove(payload json.RawMessage) {

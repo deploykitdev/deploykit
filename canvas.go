@@ -12,6 +12,13 @@ const (
 	CanvasNodeTypeGroup   = "group"
 )
 
+// CanvasEdgeManagedEnvRef marks an edge that the system maintains in response
+// to env var references between services. These edges are read-only from the
+// client's perspective: they appear/update/disappear as env vars change, and
+// WebSocket mutations from clients are rejected. Stored as the `managed` key
+// in CanvasEdge.Data JSON.
+const CanvasEdgeManagedEnvRef = "env-ref"
+
 // CanvasNode represents a visual element on a project's canvas.
 // Nodes are independent of services — some may reference a service via
 // ServiceID, others are purely visual (labels, groups).

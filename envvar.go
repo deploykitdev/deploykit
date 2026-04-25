@@ -3,6 +3,7 @@ package deploykit
 import (
 	"context"
 	"regexp"
+	"strings"
 	"time"
 )
 
@@ -25,6 +26,43 @@ func (s EnvVarScope) Valid() bool {
 // envVarKeyPattern enforces POSIX-ish environment variable naming:
 // letters, digits and underscores, not starting with a digit.
 var envVarKeyPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// envVarRefPattern matches `${{service-name.HOST}}` placeholders inside an env
+// var value. Service names follow the same shape as Docker-safe slugs: lower
+// or upper case letters, digits, and hyphens. The double-brace form was chosen
+// so users can still use shell-style `${VAR}` substitutions in their values
+// without collision.
+var envVarRefPattern = regexp.MustCompile(`\$\{\{\s*([A-Za-z0-9][A-Za-z0-9_-]*)\.HOST\s*\}\}`)
+
+// ResolveServiceRefs walks `value` for `${{name.HOST}}` placeholders and
+// substitutes each one with `lookup(name)`. If `lookup` returns ok=false for a
+// given name, the original placeholder text is left intact. The returned refs
+// slice contains the unique referenced service names (in first-seen order),
+// regardless of whether they resolved.
+func ResolveServiceRefs(value string, lookup func(name string) (hostname string, ok bool)) (string, []string) {
+	if !strings.Contains(value, "${{") {
+		return value, nil
+	}
+	seen := make(map[string]bool)
+	var refs []string
+	resolved := envVarRefPattern.ReplaceAllStringFunc(value, func(match string) string {
+		groups := envVarRefPattern.FindStringSubmatch(match)
+		if len(groups) < 2 {
+			return match
+		}
+		name := groups[1]
+		if !seen[name] {
+			seen[name] = true
+			refs = append(refs, name)
+		}
+		host, ok := lookup(name)
+		if !ok {
+			return match
+		}
+		return host
+	})
+	return resolved, refs
+}
 
 // EnvVar represents an environment variable attached to a project or service.
 type EnvVar struct {
@@ -61,9 +99,18 @@ type EnvVarService interface {
 
 	// ResolveForService returns the merged env var set for a service:
 	// project-level vars overlaid by service-level vars (service wins).
+	// Any `${{name.HOST}}` placeholders are resolved to the Docker hostname
+	// of the referenced service (`dk-{project_slug}-{service_name}-0`); if the
+	// referenced service does not exist, the placeholder is left intact.
 	// Returns an empty non-nil map if no vars are defined.
 	// Returns ENOTFOUND if the service does not exist.
 	ResolveForService(ctx context.Context, serviceID string) (map[string]string, error)
+
+	// ResolveForServiceWithRefs is ResolveForService that additionally returns
+	// the service references found in each env var value, keyed by env var key.
+	// Used by callers that need to sync canvas auto-edges in lockstep with
+	// deployment snapshots.
+	ResolveForServiceWithRefs(ctx context.Context, serviceID string) (map[string]string, map[string][]string, error)
 }
 
 // EnvVarCreate holds fields required to create an env var.

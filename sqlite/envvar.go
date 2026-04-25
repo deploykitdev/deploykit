@@ -178,15 +178,32 @@ func (s *EnvVarService) DeleteEnvVar(ctx context.Context, id string) error {
 }
 
 func (s *EnvVarService) ResolveForService(ctx context.Context, serviceID string) (map[string]string, error) {
-	// Fetch the service's project ID.
-	var projectID string
+	env, _, err := s.ResolveForServiceWithRefs(ctx, serviceID)
+	return env, err
+}
+
+func (s *EnvVarService) ResolveForServiceWithRefs(ctx context.Context, serviceID string) (map[string]string, map[string][]string, error) {
+	// Fetch the service's project ID + slug. Slug is needed to assemble
+	// hostnames for `${{name.HOST}}` placeholder substitution.
+	var projectID, projectSlug string
 	err := s.db.db.QueryRowContext(ctx,
-		`SELECT project_id FROM services WHERE id = ?`, serviceID,
-	).Scan(&projectID)
+		`SELECT p.id, p.slug FROM services s JOIN projects p ON p.id = s.project_id WHERE s.id = ?`,
+		serviceID,
+	).Scan(&projectID, &projectSlug)
 	if err == sql.ErrNoRows {
-		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Service not found.")
+		return nil, nil, deploykit.Errorf(deploykit.ENOTFOUND, "Service not found.")
 	} else if err != nil {
-		return nil, fmt.Errorf("getting service %s: %w", serviceID, err)
+		return nil, nil, fmt.Errorf("getting service %s: %w", serviceID, err)
+	}
+
+	// Build a name -> hostname lookup of every service in this project so we
+	// can resolve placeholder references. We capture all services regardless
+	// of deployment state — references to undeployed services still produce
+	// the correct hostname; the consumer just won't be able to reach them
+	// until the target is up.
+	siblings, err := loadProjectServiceNames(ctx, s.db.db, projectID)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// Fetch both scopes in one query. 'project' sorts before 'service'
@@ -199,7 +216,7 @@ func (s *EnvVarService) ResolveForService(ctx context.Context, serviceID string)
 		projectID, serviceID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("resolving env vars for service %s: %w", serviceID, err)
+		return nil, nil, fmt.Errorf("resolving env vars for service %s: %w", serviceID, err)
 	}
 	defer rows.Close()
 
@@ -207,15 +224,69 @@ func (s *EnvVarService) ResolveForService(ctx context.Context, serviceID string)
 	for rows.Next() {
 		var scope, key, value string
 		if err := rows.Scan(&scope, &key, &value); err != nil {
-			return nil, fmt.Errorf("scanning env var row: %w", err)
+			return nil, nil, fmt.Errorf("scanning env var row: %w", err)
 		}
 		merged[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating env var rows: %w", err)
+		return nil, nil, fmt.Errorf("iterating env var rows: %w", err)
 	}
 
-	return merged, nil
+	resolved, refs := resolveServiceRefsInMap(merged, projectSlug, siblings)
+	return resolved, refs, nil
+}
+
+// loadProjectServiceNames returns a set of all service names in a project.
+// Used to validate `${{name.HOST}}` lookups during placeholder resolution.
+func loadProjectServiceNames(ctx context.Context, db dbExecutor, projectID string) (map[string]bool, error) {
+	rows, err := db.QueryContext(ctx, `SELECT name FROM services WHERE project_id = ?`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("listing project services: %w", err)
+	}
+	defer rows.Close()
+	names := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("scanning service name: %w", err)
+		}
+		names[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating service names: %w", err)
+	}
+	return names, nil
+}
+
+// resolveServiceRefsInMap walks every value in env, replacing `${{name.HOST}}`
+// references with `dk-{projectSlug}-{name}-0` when the name is in `siblings`.
+// Returns the resolved map and a per-key list of referenced service names.
+func resolveServiceRefsInMap(env map[string]string, projectSlug string, siblings map[string]bool) (map[string]string, map[string][]string) {
+	resolved := make(map[string]string, len(env))
+	var refs map[string][]string
+	for k, v := range env {
+		newVal, names := deploykit.ResolveServiceRefs(v, func(name string) (string, bool) {
+			if !siblings[name] {
+				return "", false
+			}
+			return fmt.Sprintf("dk-%s-%s-0", projectSlug, name), true
+		})
+		resolved[k] = newVal
+		if len(names) > 0 {
+			if refs == nil {
+				refs = make(map[string][]string)
+			}
+			refs[k] = names
+		}
+	}
+	return resolved, refs
+}
+
+// dbExecutor abstracts over *sql.DB and *sql.Tx so helpers can be reused both
+// outside and inside transactions.
+type dbExecutor interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // verifyScopeExists returns ENOTFOUND if the target project or service does

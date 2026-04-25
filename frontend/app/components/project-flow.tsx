@@ -3,6 +3,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   Background,
+  ConnectionMode,
   Panel,
   useReactFlow,
   type Node,
@@ -25,12 +26,19 @@ import { ServiceNode, type ServiceNodeData } from "./service-node";
 import { ServiceDetailPanel } from "./service-detail-panel";
 import { PendingChangesPanel } from "./pending-changes-panel";
 import { PendingServicePanel } from "./pending-service-panel";
+import { FloatingEdge } from "./floating-edge";
 
 const nodeTypes = {
   service: ServiceNode,
   "service-draft": AddServiceForm,
   "service-drafting": DraftingServiceGhost,
 };
+
+const edgeTypes = {
+  floating: FloatingEdge,
+};
+
+const defaultEdgeOptions = { type: "floating" };
 
 const DRAFT_NODE_WIDTH = 320;
 const DRAFT_NODE_HEIGHT = 272;
@@ -389,6 +397,9 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         nodes={composedNodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
+        defaultEdgeOptions={defaultEdgeOptions}
+        connectionMode={ConnectionMode.Loose}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

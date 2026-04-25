@@ -3,9 +3,13 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/heyjorgedev/deploykit"
 )
 
@@ -280,6 +284,138 @@ func (s *CanvasService) DeleteEdge(ctx context.Context, projectID string, edgeID
 	}
 	if rowsAffected == 0 {
 		return deploykit.Errorf(deploykit.ENOTFOUND, "Canvas edge not found.")
+	}
+
+	return nil
+}
+
+// findNodeIDByServiceID returns the canvas node ID linked to the given service
+// ID within a project. Returns ("", nil) if no node references that service —
+// used by edge sync where the absence of a node is benign.
+func findNodeIDByServiceID(ctx context.Context, tx *sql.Tx, projectID, serviceID string) (string, error) {
+	var nodeID string
+	err := tx.QueryRowContext(ctx,
+		`SELECT id FROM canvas_nodes WHERE project_id = ? AND service_id = ?`,
+		projectID, serviceID,
+	).Scan(&nodeID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("looking up canvas node for service %s: %w", serviceID, err)
+	}
+	return nodeID, nil
+}
+
+// findNodeIDByServiceName returns the canvas node ID for the service named
+// `name` in `projectID`, or ("", nil) if no such linked node exists.
+func findNodeIDByServiceName(ctx context.Context, tx *sql.Tx, projectID, name string) (string, error) {
+	var nodeID string
+	err := tx.QueryRowContext(ctx,
+		`SELECT n.id FROM canvas_nodes n
+		 JOIN services s ON s.id = n.service_id
+		 WHERE n.project_id = ? AND s.name = ?`,
+		projectID, name,
+	).Scan(&nodeID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	} else if err != nil {
+		return "", fmt.Errorf("looking up canvas node for service name %q: %w", name, err)
+	}
+	return nodeID, nil
+}
+
+// envRefEdgeData is the JSON payload stored in CanvasEdge.Data for system-
+// managed env-ref edges. The frontend keys off `Managed` to render these as
+// read-only and uses `Keys` to label the edge.
+type envRefEdgeData struct {
+	Managed string   `json:"managed"`
+	Keys    []string `json:"keys"`
+}
+
+// syncAutoEdgesForService reconciles the system-managed env-ref edges sourced
+// from a service's canvas node against the references discovered in its env
+// vars. refsByKey maps env var key -> list of referenced service names. If the
+// source service has no canvas node yet (e.g. during deploy of an orphaned
+// service), the call is a no-op. Self-references and references to services
+// without canvas nodes are skipped.
+func syncAutoEdgesForService(ctx context.Context, tx *sql.Tx, projectID, serviceID string, refsByKey map[string][]string) error {
+	sourceNodeID, err := findNodeIDByServiceID(ctx, tx, projectID, serviceID)
+	if err != nil {
+		return err
+	}
+	if sourceNodeID == "" {
+		return nil
+	}
+
+	var sourceServiceName string
+	if err := tx.QueryRowContext(ctx, `SELECT name FROM services WHERE id = ?`, serviceID).Scan(&sourceServiceName); err != nil {
+		return fmt.Errorf("loading service name: %w", err)
+	}
+
+	// Group keys by target node so each (source, target) pair gets one edge
+	// labelled with the union of triggering env var keys.
+	keysByTarget := make(map[string]map[string]bool)
+	for key, refs := range refsByKey {
+		for _, name := range refs {
+			if name == sourceServiceName {
+				continue
+			}
+			targetNodeID, err := findNodeIDByServiceName(ctx, tx, projectID, name)
+			if err != nil {
+				return err
+			}
+			if targetNodeID == "" {
+				continue
+			}
+			set, ok := keysByTarget[targetNodeID]
+			if !ok {
+				set = make(map[string]bool)
+				keysByTarget[targetNodeID] = set
+			}
+			set[key] = true
+		}
+	}
+
+	// Drop existing env-ref edges from this source — easier than diffing,
+	// edges have no client state worth preserving.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM canvas_edges
+		 WHERE project_id = ? AND source_id = ?
+		   AND json_extract(data, '$.managed') = ?`,
+		projectID, sourceNodeID, deploykit.CanvasEdgeManagedEnvRef,
+	); err != nil {
+		return fmt.Errorf("clearing existing env-ref edges: %w", err)
+	}
+
+	if len(keysByTarget) == 0 {
+		return nil
+	}
+
+	now := time.Now().UTC().Format(timeFormat)
+	for targetNodeID, keySet := range keysByTarget {
+		keys := make([]string, 0, len(keySet))
+		for k := range keySet {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		dataBytes, err := json.Marshal(envRefEdgeData{
+			Managed: deploykit.CanvasEdgeManagedEnvRef,
+			Keys:    keys,
+		})
+		if err != nil {
+			return fmt.Errorf("marshaling edge data: %w", err)
+		}
+
+		label := strings.Join(keys, ", ")
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO canvas_edges (id, project_id, source_id, target_id, label, data, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			uuid.New().String(), projectID, sourceNodeID, targetNodeID,
+			label, string(dataBytes), now, now,
+		); err != nil {
+			return fmt.Errorf("inserting env-ref edge: %w", err)
+		}
 	}
 
 	return nil

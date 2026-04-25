@@ -3,6 +3,7 @@ package sqlite_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/heyjorgedev/deploykit"
@@ -621,3 +622,168 @@ func TestPendingChangeService_DiscardAll_CleansUpPendingCreatedNodes(t *testing.
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestPendingChangeService_Apply_EnvRefAutoEdges exercises the env-ref →
+// auto-edge sync end to end: applying a pending env var that references
+// another service's host creates a system-managed canvas edge between the
+// two service nodes, with the resolved hostname snapshotted into the
+// deployment's env var map.
+func TestPendingChangeService_Apply_EnvRefAutoEdges(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	depSvc := sqlite.NewDeploymentService(db)
+	canvasSvc := sqlite.NewCanvasService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+	// Set up two services + their canvas nodes.
+	dbSvc, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "db"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	web, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "web"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := depSvc.CreateDeployment(ctx, web.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+	dbNode, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID: "node-db", Type: deploykit.CanvasNodeTypeService, Label: "db", ServiceID: &dbSvc.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webNode, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID: "node-web", Type: deploykit.CanvasNodeTypeService, Label: "web", ServiceID: &web.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage an env var on web that references db.
+	payload, _ := json.Marshal(deploykit.EnvVarCreatePayload{
+		Scope: deploykit.EnvVarScopeService,
+		Key:   "DB_HOST",
+		Value: "${{db.HOST}}",
+	})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarCreate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &web.ID,
+		Payload:    payload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Apply(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	// Verify the new deployment snapshot has the resolved hostname.
+	if len(res.CreatedDeployments) != 1 {
+		t.Fatalf("deployments: got %d, want 1", len(res.CreatedDeployments))
+	}
+	wantHost := "dk-" + proj.Slug + "-db-0"
+	if got := res.CreatedDeployments[0].EnvVars["DB_HOST"]; got != wantHost {
+		t.Errorf("snapshot DB_HOST: got %q, want %q", got, wantHost)
+	}
+
+	// Verify the auto-edge exists.
+	_, edges, err := canvasSvc.GetCanvasState(ctx, proj.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *deploykit.CanvasEdge
+	for _, e := range edges {
+		if e.SourceID == webNode.ID && e.TargetID == dbNode.ID {
+			found = e
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected auto-edge web -> db; got %d edges: %+v", len(edges), edges)
+	}
+	if !strings.Contains(found.Data, `"managed":"env-ref"`) {
+		t.Errorf("edge data missing managed marker: %q", found.Data)
+	}
+	if !strings.Contains(found.Data, `"DB_HOST"`) {
+		t.Errorf("edge data should list triggering key DB_HOST: %q", found.Data)
+	}
+}
+
+// TestPendingChangeService_Apply_ServiceRenameRewritesRefs verifies that
+// renaming a service updates `${{old.HOST}}` references in consumer env vars
+// and refreshes their deployment snapshot to use the new container hostname.
+func TestPendingChangeService_Apply_ServiceRenameRewritesRefs(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	envSvc := sqlite.NewEnvVarService(db)
+	depSvc := sqlite.NewDeploymentService(db)
+	canvasSvc := sqlite.NewCanvasService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+	dbSvc, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "db"})
+	web, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "web"})
+	if _, err := depSvc.CreateDeployment(ctx, web.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := envSvc.CreateEnvVar(ctx, deploykit.EnvVarScopeService, web.ID, deploykit.EnvVarCreate{
+		Key: "DB_HOST", Value: "${{db.HOST}}",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID: "node-db", Type: deploykit.CanvasNodeTypeService, Label: "db", ServiceID: &dbSvc.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID: "node-web", Type: deploykit.CanvasNodeTypeService, Label: "web", ServiceID: &web.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rename db -> database.
+	renamePayload, _ := json.Marshal(deploykit.ServiceUpdatePayload{Name: strPtr("database")})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceUpdate,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &dbSvc.ID,
+		Payload:    renamePayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Apply(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	// web's env var raw value should now reference the new name.
+	envs, _ := envSvc.ListEnvVars(ctx, deploykit.EnvVarScopeService, web.ID)
+	if len(envs) != 1 || envs[0].Value != "${{database.HOST}}" {
+		t.Errorf("rewritten env var: got %+v", envs)
+	}
+
+	// web should have been redeployed with the new resolved hostname.
+	wantHost := "dk-" + proj.Slug + "-database-0"
+	var webDep *deploykit.Deployment
+	for _, dep := range res.CreatedDeployments {
+		if dep.ServiceID == web.ID {
+			webDep = dep
+			break
+		}
+	}
+	if webDep == nil {
+		t.Fatalf("web was not redeployed; deployments: %+v", res.CreatedDeployments)
+	}
+	if got := webDep.EnvVars["DB_HOST"]; got != wantHost {
+		t.Errorf("DB_HOST snapshot: got %q, want %q", got, wantHost)
+	}
+}
+

@@ -21,12 +21,32 @@ interface EnvVarFormDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   action: SubmitFn;
+  // Service names in the current project. Used to warn (non-blocking) when a
+  // value references an unknown service via `${{name.HOST}}`. Optional —
+  // omitted the placeholder hint is still shown, just without validation.
+  knownServiceNames?: string[];
+}
+
+const REF_PATTERN = /\$\{\{\s*([A-Za-z0-9][A-Za-z0-9_-]*)\.HOST\s*\}\}/g;
+
+function findRefs(value: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const match of value.matchAll(REF_PATTERN)) {
+    const name = match[1];
+    if (!seen.has(name)) {
+      seen.add(name);
+      out.push(name);
+    }
+  }
+  return out;
 }
 
 export function EnvVarFormDialog({
   open,
   onOpenChange,
   action,
+  knownServiceNames,
 }: EnvVarFormDialogProps) {
   const initialKey = action.mode === "edit" ? action.envVar.key : "";
   const initialValue = action.mode === "edit" ? action.envVar.value : "";
@@ -124,6 +144,7 @@ export function EnvVarFormDialog({
                 className="font-mono"
               />
               {errors.value && <FieldError>{errors.value}</FieldError>}
+              <RefHint value={value} knownServiceNames={knownServiceNames} />
             </Field>
           </div>
 
@@ -143,6 +164,45 @@ export function EnvVarFormDialog({
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// RefHint surfaces `${{name.HOST}}` references found in the value, flagging
+// any names that aren't recognised services in the current project. It never
+// blocks submission — the backend leaves unresolved placeholders intact.
+function RefHint({
+  value,
+  knownServiceNames,
+}: {
+  value: string;
+  knownServiceNames?: string[];
+}) {
+  const refs = findRefs(value);
+  if (refs.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Reference another service&apos;s host with{" "}
+        <code className="font-mono">{"${{name.HOST}}"}</code>.
+      </p>
+    );
+  }
+  const known = knownServiceNames
+    ? new Set(knownServiceNames)
+    : null;
+  const unknown = known ? refs.filter((r) => !known.has(r)) : [];
+  return (
+    <div className="text-xs">
+      <p className="text-muted-foreground">
+        Resolves <code className="font-mono">{"${{name.HOST}}"}</code> to the
+        target service&apos;s container hostname at deploy time.
+      </p>
+      {unknown.length > 0 && (
+        <p className="mt-1 text-amber-600 dark:text-amber-400">
+          No service named {unknown.map((n) => `"${n}"`).join(", ")} in this
+          project — the placeholder will be left as-is.
+        </p>
+      )}
+    </div>
   );
 }
 

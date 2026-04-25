@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -382,7 +383,7 @@ func (s *PendingChangeService) applyEntry(
 		}
 
 		// Build the initial deployment with project+service env vars merged.
-		resolved, err := resolveEnvVarsInTx(ctx, tx, projectID, svcID)
+		resolved, refs, err := resolveEnvVarsInTx(ctx, tx, projectID, svcID)
 		if err != nil {
 			return fmt.Errorf("resolving env vars: %w", err)
 		}
@@ -412,6 +413,10 @@ func (s *PendingChangeService) applyEntry(
 			return fmt.Errorf("linking canvas node to service: %w", err)
 		}
 
+		if err := syncAutoEdgesForService(ctx, tx, projectID, svcID, refs); err != nil {
+			return fmt.Errorf("syncing auto-edges: %w", err)
+		}
+
 		result.TempIDToServiceID[*e.TargetTempID] = svcID
 		result.CreatedDeployments = append(result.CreatedDeployments, dep)
 		created[svcID] = true
@@ -425,14 +430,29 @@ func (s *PendingChangeService) applyEntry(
 		if err := json.Unmarshal(e.Payload, &p); err != nil {
 			return fmt.Errorf("decoding service.update payload: %w", err)
 		}
+
+		// Capture the previous name so we can rewrite consumer env var
+		// references if the rename goes through.
+		var prevName string
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM services WHERE id = ?`, resolvedTarget).Scan(&prevName); err != nil {
+			if err == sql.ErrNoRows {
+				return deploykit.Errorf(deploykit.ENOTFOUND, "Service not found.")
+			}
+			return fmt.Errorf("loading service for update: %w", err)
+		}
+
 		sets := []string{"updated_at = ?"}
 		args := []any{time.Now().UTC().Format(timeFormat)}
+		renamedTo := ""
 		if p.Name != nil {
 			if *p.Name == "" {
 				return deploykit.Errorf(deploykit.EINVALID, "Service name cannot be empty.")
 			}
 			sets = append(sets, "name = ?")
 			args = append(args, *p.Name)
+			if *p.Name != prevName {
+				renamedTo = *p.Name
+			}
 		}
 		if p.IconURL != nil {
 			if *p.IconURL == "" {
@@ -454,6 +474,23 @@ func (s *PendingChangeService) applyEntry(
 				return deploykit.Errorf(deploykit.ECONFLICT, "A service with this name already exists in the project.")
 			}
 			return fmt.Errorf("updating service: %w", err)
+		}
+
+		if renamedTo != "" {
+			// Rewrite `${{old.HOST}}` -> `${{new.HOST}}` in env vars across the
+			// whole project. Mark every service that owns a rewritten value (or
+			// inherits a rewritten project-scope value) as affected so its
+			// deployment snapshot picks up the new hostname.
+			consumers, err := rewriteServiceRefs(ctx, tx, projectID, prevName, renamedTo)
+			if err != nil {
+				return err
+			}
+			// The renamed service itself also needs a fresh deployment because
+			// its container name (which is the hostname) changed.
+			affected[resolvedTarget] = true
+			for id := range consumers {
+				affected[id] = true
+			}
 		}
 		return nil
 
@@ -621,18 +658,27 @@ func (s *PendingChangeService) refreshDeploymentInTx(ctx context.Context, tx *sq
 		}
 	}
 
-	resolved, err := resolveEnvVarsInTx(ctx, tx, projectID, serviceID)
+	resolved, refs, err := resolveEnvVarsInTx(ctx, tx, projectID, serviceID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving env vars: %w", err)
 	}
 
-	return createDeploymentInTx(ctx, tx, serviceID, deploykit.DeploymentCreate{
+	dep, err := createDeploymentInTx(ctx, tx, serviceID, deploykit.DeploymentCreate{
 		Image:     image,
 		EnvVars:   resolved,
 		Ports:     ports,
 		Resources: resources,
 		Replicas:  replicas,
 	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := syncAutoEdgesForService(ctx, tx, projectID, serviceID, refs); err != nil {
+		return nil, fmt.Errorf("syncing auto-edges: %w", err)
+	}
+
+	return dep, nil
 }
 
 // markEnvVarAffected records which services need their deployment refreshed.
@@ -664,9 +710,117 @@ func markEnvVarAffected(ctx context.Context, tx *sql.Tx, projectID string, scope
 	return nil
 }
 
+// rewriteServiceRefs walks every env var in the project, replacing
+// `${{oldName.HOST}}` references with `${{newName.HOST}}`. Returns the set of
+// service IDs whose effective env var set changed and therefore need a fresh
+// deployment snapshot. A project-scope rewrite fans out to every deployed
+// service in the project.
+func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, newName string) (map[string]bool, error) {
+	pattern, err := regexp.Compile(`\$\{\{\s*` + regexp.QuoteMeta(oldName) + `\.HOST\s*\}\}`)
+	if err != nil {
+		return nil, fmt.Errorf("compiling rename pattern: %w", err)
+	}
+	replacement := "${{" + newName + ".HOST}}"
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, scope, scope_id, value FROM env_vars
+		 WHERE ((scope = 'project' AND scope_id = ?)
+		        OR (scope = 'service' AND scope_id IN (SELECT id FROM services WHERE project_id = ?)))
+		   AND value LIKE '%${{%'`,
+		projectID, projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("scanning env vars for rename: %w", err)
+	}
+	type rewriteRow struct {
+		id       string
+		scope    string
+		scopeID  string
+		newValue string
+	}
+	var rewrites []rewriteRow
+	for rows.Next() {
+		var r rewriteRow
+		var value string
+		if err := rows.Scan(&r.id, &r.scope, &r.scopeID, &value); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning env var row: %w", err)
+		}
+		newVal := pattern.ReplaceAllString(value, replacement)
+		if newVal == value {
+			continue
+		}
+		r.newValue = newVal
+		rewrites = append(rewrites, r)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating env var rows: %w", err)
+	}
+
+	if len(rewrites) == 0 {
+		return nil, nil
+	}
+
+	now := time.Now().UTC().Format(timeFormat)
+	affected := make(map[string]bool)
+	projectScoped := false
+	for _, r := range rewrites {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE env_vars SET value = ?, updated_at = ? WHERE id = ?`,
+			r.newValue, now, r.id,
+		); err != nil {
+			return nil, fmt.Errorf("updating env var %s: %w", r.id, err)
+		}
+		switch deploykit.EnvVarScope(r.scope) {
+		case deploykit.EnvVarScopeService:
+			affected[r.scopeID] = true
+		case deploykit.EnvVarScopeProject:
+			projectScoped = true
+		}
+	}
+
+	if projectScoped {
+		// Fan project-scope rewrites out to every active service in the project.
+		svcRows, err := tx.QueryContext(ctx,
+			`SELECT id FROM services WHERE project_id = ? AND active_deployment_id IS NOT NULL`,
+			projectID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("listing project services: %w", err)
+		}
+		defer svcRows.Close()
+		for svcRows.Next() {
+			var id string
+			if err := svcRows.Scan(&id); err != nil {
+				return nil, fmt.Errorf("scanning service id: %w", err)
+			}
+			affected[id] = true
+		}
+		if err := svcRows.Err(); err != nil {
+			return nil, fmt.Errorf("iterating service rows: %w", err)
+		}
+	}
+
+	return affected, nil
+}
+
 // resolveEnvVarsInTx merges project and service env vars for the given service
-// inside an open transaction. Service values override project values.
-func resolveEnvVarsInTx(ctx context.Context, tx *sql.Tx, projectID, serviceID string) (map[string]string, error) {
+// inside an open transaction. Service values override project values, and
+// `${{name.HOST}}` placeholders are resolved against sibling service names.
+// Returns the resolved map plus a per-key list of referenced service names so
+// callers can sync canvas auto-edges in the same transaction.
+func resolveEnvVarsInTx(ctx context.Context, tx *sql.Tx, projectID, serviceID string) (map[string]string, map[string][]string, error) {
+	var projectSlug string
+	if err := tx.QueryRowContext(ctx, `SELECT slug FROM projects WHERE id = ?`, projectID).Scan(&projectSlug); err != nil {
+		return nil, nil, fmt.Errorf("loading project slug: %w", err)
+	}
+
+	siblings, err := loadProjectServiceNames(ctx, tx, projectID)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	rows, err := tx.QueryContext(ctx,
 		`SELECT scope, key, value FROM env_vars
 		 WHERE (scope = 'project' AND scope_id = ?) OR (scope = 'service' AND scope_id = ?)
@@ -674,7 +828,7 @@ func resolveEnvVarsInTx(ctx context.Context, tx *sql.Tx, projectID, serviceID st
 		projectID, serviceID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("resolving env vars: %w", err)
+		return nil, nil, fmt.Errorf("resolving env vars: %w", err)
 	}
 	defer rows.Close()
 
@@ -682,14 +836,16 @@ func resolveEnvVarsInTx(ctx context.Context, tx *sql.Tx, projectID, serviceID st
 	for rows.Next() {
 		var scope, key, value string
 		if err := rows.Scan(&scope, &key, &value); err != nil {
-			return nil, fmt.Errorf("scanning env var: %w", err)
+			return nil, nil, fmt.Errorf("scanning env var: %w", err)
 		}
 		merged[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating env vars: %w", err)
+		return nil, nil, fmt.Errorf("iterating env vars: %w", err)
 	}
-	return merged, nil
+
+	resolved, refs := resolveServiceRefsInMap(merged, projectSlug, siblings)
+	return resolved, refs, nil
 }
 
 // createDeploymentInTx mirrors DeploymentService.CreateDeployment but runs

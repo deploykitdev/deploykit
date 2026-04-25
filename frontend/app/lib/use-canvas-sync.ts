@@ -106,11 +106,31 @@ function toFlowNode(dbNode: CanvasNode): Node {
 }
 
 function toFlowEdge(dbEdge: CanvasEdge): Edge {
+  let managed: string | undefined;
+  if (dbEdge.data) {
+    try {
+      managed = (JSON.parse(dbEdge.data) as { managed?: string }).managed;
+    } catch {
+      // ignore — treat as user edge
+    }
+  }
+  const isManaged = managed === "env-ref";
+
   return {
     id: dbEdge.id,
     source: dbEdge.source_id,
     target: dbEdge.target_id,
+    type: "floating",
     ...(dbEdge.label ? { label: dbEdge.label } : {}),
+    ...(isManaged
+      ? {
+          deletable: false,
+          animated: true,
+          style: { stroke: "var(--color-primary)", strokeDasharray: "4 4" },
+          labelStyle: { fontSize: 10, color: "var(--color-primary)" },
+          data: { managed },
+        }
+      : {}),
   };
 }
 
@@ -508,13 +528,26 @@ export function useCanvasSync(projectId: string) {
   }, []);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
-    setEdges((eds) => applyEdgeChanges(changes, eds));
-
-    for (const change of changes) {
-      if (change.type === "remove") {
-        wsRef.current?.send("edge:delete", { id: change.id });
+    // Strip remove-changes targeting managed edges. React Flow already honours
+    // `deletable: false` on the edge itself, but selection+delete via keyboard
+    // can bypass that, and we don't want to broadcast a delete the server will
+    // reject.
+    setEdges((eds) => {
+      const managedIDs = new Set(
+        eds
+          .filter((e) => (e.data as { managed?: string } | undefined)?.managed)
+          .map((e) => e.id),
+      );
+      const safeChanges = changes.filter(
+        (c) => !(c.type === "remove" && managedIDs.has(c.id)),
+      );
+      for (const change of safeChanges) {
+        if (change.type === "remove") {
+          wsRef.current?.send("edge:delete", { id: change.id });
+        }
       }
-    }
+      return applyEdgeChanges(safeChanges, eds);
+    });
   }, []);
 
   const onConnect = useCallback((connection: Connection) => {

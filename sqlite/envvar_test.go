@@ -349,6 +349,57 @@ func TestEnvVarService_ResolveForService(t *testing.T) {
 		}
 	})
 
+	t.Run("resolves ${{name.HOST}} to sibling hostname", func(t *testing.T) {
+		db := MustOpenDB(t)
+		project := MustCreateProject(t, NewProjectService(db), "p")
+		MustCreateService(t, db, project.ID, "db")
+		web := MustCreateService(t, db, project.ID, "web")
+		svc := NewEnvVarService(db)
+
+		MustCreateEnvVar(t, svc, deploykit.EnvVarScopeService, web.ID, "DB_HOST", "${{db.HOST}}")
+		MustCreateEnvVar(t, svc, deploykit.EnvVarScopeService, web.ID, "DB_URL", "postgres://${{db.HOST}}:5432")
+
+		merged, refs, err := svc.ResolveForServiceWithRefs(context.Background(), web.ID)
+		if err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		wantHost := "dk-" + project.Slug + "-db-0"
+		if merged["DB_HOST"] != wantHost {
+			t.Fatalf("DB_HOST: got %q, want %q", merged["DB_HOST"], wantHost)
+		}
+		want := "postgres://" + wantHost + ":5432"
+		if merged["DB_URL"] != want {
+			t.Fatalf("DB_URL: got %q, want %q", merged["DB_URL"], want)
+		}
+		if len(refs["DB_HOST"]) != 1 || refs["DB_HOST"][0] != "db" {
+			t.Fatalf("refs[DB_HOST]: got %v, want [db]", refs["DB_HOST"])
+		}
+		if len(refs["DB_URL"]) != 1 || refs["DB_URL"][0] != "db" {
+			t.Fatalf("refs[DB_URL]: got %v, want [db]", refs["DB_URL"])
+		}
+	})
+
+	t.Run("leaves unresolved refs to unknown services as literal", func(t *testing.T) {
+		db := MustOpenDB(t)
+		project := MustCreateProject(t, NewProjectService(db), "p")
+		web := MustCreateService(t, db, project.ID, "web")
+		svc := NewEnvVarService(db)
+
+		MustCreateEnvVar(t, svc, deploykit.EnvVarScopeService, web.ID, "X", "${{ghost.HOST}}")
+
+		merged, refs, err := svc.ResolveForServiceWithRefs(context.Background(), web.ID)
+		if err != nil {
+			t.Fatal("unexpected error:", err)
+		}
+		if merged["X"] != "${{ghost.HOST}}" {
+			t.Fatalf("X: got %q, want literal placeholder", merged["X"])
+		}
+		// Refs are still recorded so the UI can warn.
+		if len(refs["X"]) != 1 || refs["X"][0] != "ghost" {
+			t.Fatalf("refs[X]: got %v, want [ghost]", refs["X"])
+		}
+	})
+
 	t.Run("unknown service", func(t *testing.T) {
 		db := MustOpenDB(t)
 		svc := NewEnvVarService(db)
