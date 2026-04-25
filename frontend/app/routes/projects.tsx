@@ -99,7 +99,7 @@ function ProjectsList() {
             const { from, to } = gradientFromSlug(p.slug);
             return (
               <Link key={p.id} to={`/projects/${p.id}`} className="group">
-                <Card className="relative gap-0 overflow-hidden p-0 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-md group-hover:ring-primary/40">
+                <Card className="relative gap-0 overflow-hidden p-0 transition-all duration-200 group-hover:shadow-md group-hover:ring-primary/40">
                   <div
                     className="relative h-20"
                     style={{
@@ -114,7 +114,7 @@ function ProjectsList() {
                         backgroundSize: "14px 14px",
                       }}
                     />
-                    <ArrowUpRight className="absolute right-3 top-3 size-4 text-white/70 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-white" />
+                    <ArrowUpRight className="absolute right-3 top-3 size-4 text-white/70 transition-all duration-200 group-hover:translate-x-0.5 group-hover:text-white" />
                   </div>
                   <div className="absolute left-4 top-[58px] flex size-11 items-center justify-center rounded-full bg-card text-base font-semibold ring-1 ring-border">
                     {p.name.charAt(0).toUpperCase()}
