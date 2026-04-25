@@ -9,11 +9,13 @@ Follows the [WTF Dial](https://github.com/benbjohnson/wtf) pattern by Ben Johnso
 - **Root package (`deploykit`)** — Domain types and service interfaces. Zero dependencies on implementations.
 - **`http`** — HTTP server, handlers, and routing. Depends on root domain types.
 - **`sqlite`** — Database layer using SQLite. Implements service interfaces from root.
-- **`docker`** — Docker client and network provisioning. Implements the `Provisioner` interface.
+- **`docker`** — Docker client, network provisioning, and log streaming. Implements `Provisioner` and `LogStreamer`.
+- **`events`** — In-process `EventBus` implementation (non-blocking pub/sub).
 - **`reconciler`** — Periodic reconciliation loop syncing DB state with Docker.
+- **`sysinfo`** — Host/Docker/DB introspection. Implements `SystemService`.
 - **`cmd/deploykitd`** — Main entry point. Wires everything together.
 
-Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`, `reconciler`) depend on the root package, never on each other.
+Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`, `events`, `reconciler`, `sysinfo`) depend on the root package, never on each other.
 
 ## Tech Stack
 
@@ -36,6 +38,10 @@ deployment.go      - Deployment domain type and DeploymentService interface
 container.go       - Container domain type and ContainerService interface
 canvas.go          - CanvasNode, CanvasEdge types and CanvasService interface
 system.go          - SystemAbout, SystemStatus types and SystemService interface
+envvar.go          - EnvVar type and EnvVarService interface (project + service scope)
+pending_change.go  - PendingChange types and PendingChangeService (staged-edit changelog)
+bus.go             - EventBus interface and event payload types
+logs.go            - LogLine type and LogStreamer interface
 provisioner.go     - Provisioner interface (network management)
 slug.go            - Slug generation utility
 errors.go          - Domain error types and codes (ECONFLICT, EINTERNAL, etc.)
@@ -47,7 +53,8 @@ http/              - HTTP server, routes, handlers, middleware (auth, CORS)
   spa_dev.go       - Dev stub (returns message to use Vite dev server)
   spa_assets/dist/ - Vite build output (gitignored, embedded into binary)
 sqlite/            - SQLite service implementations, migrations
-docker/            - Docker client and network provisioning
+docker/            - Docker client, network provisioning, container log streaming
+events/            - In-process EventBus implementation (non-blocking pub/sub)
 reconciler/        - Periodic reconciliation loop (desired DB state vs Docker state)
 sysinfo/           - SystemService implementation (gopsutil + Docker daemon introspection)
 frontend/          - React Router + Vite + TypeScript SPA
@@ -69,6 +76,10 @@ All defined in the root `deploykit` package:
 - **`ContainerService`** — Create, get, list, update status, delete container records
 - **`CanvasService`** — Get canvas state, upsert/delete nodes and edges, batch position updates
 - **`SystemService`** — Host, Docker, and DB introspection (`About`, `Status`); tolerates unreachable Docker by returning partial data
+- **`EnvVarService`** — CRUD for project- and service-scoped env vars; `ResolveForService` overlays project vars with service overrides
+- **`PendingChangeService`** — Append-only changelog of staged edits per project; `Apply` mutates real state in one transaction and clears the log
+- **`EventBus`** — Non-blocking in-process pub/sub for service/container/deployment events; slow subscribers drop messages rather than backpressure publishers
+- **`LogStreamer`** — Stream container logs from the runtime (tail + follow) onto a caller-owned channel
 - **`Provisioner`** — Network management (create/remove/list Docker networks)
 
 ## Authentication
@@ -83,7 +94,11 @@ All defined in the root `deploykit` package:
 
 ## Reconciler
 
-The reconciler (`reconciler/`) runs a periodic loop (default 30s) that syncs desired state from the database with actual Docker state. It creates networks for new projects and cleans up orphaned networks. It can also be triggered on-demand after project/deployment changes and prevents concurrent reconciliation cycles.
+The reconciler (`reconciler/`) runs a periodic loop (default 30s) that syncs desired state from the database with actual Docker state. It creates networks for new projects, reconciles containers from active deployments, and cleans up orphaned networks. It can also be triggered on-demand after project/deployment changes and prevents concurrent reconciliation cycles.
+
+## Pending Changes
+
+Deploy-impacting edits (project rename, service create/update/delete, env var CRUD) are not applied immediately — they are appended to a per-project `pending_changes` log via `PendingChangeService.Append`. The frontend renders the staged diff and the user clicks **Apply** to commit. `Apply` walks entries in sequence inside one transaction, resolves `target_temp_id` references for newly-created services, refreshes deployments for services whose env vars changed, clears the log on success, and rolls back on any error. Created deployments are returned in the result so callers can publish `EventDeploymentCreated` on the bus.
 
 ## Testing
 
@@ -107,8 +122,8 @@ All backend routes are prefixed with `/api/` (e.g., `/api/auth/login`, `/api/pro
 - **Dev workflow:** Two terminals — `make dev` (Go backend on :8080) + `make dev-frontend` (Vite on :5173 with API proxy)
 - **Build tags:** `go run -tags dev` skips SPA embedding so the backend can run without building the frontend
 - **Data fetching:** TanStack Query for declarative fetching and caching
-- **Canvas:** React Flow-based collaborative canvas with real-time WebSocket sync, cursor tracking, and connected users display
-- **Pages:** Login, Register, Projects list (with create dialog), Project detail with canvas, Settings (General, Users, System, About — admin-only)
+- **Canvas:** React Flow-based collaborative canvas with real-time WebSocket sync, cursor tracking, connected users display, context menu, and Railway-style controls. Clicking a service node opens a side panel with details and live-streaming container logs.
+- **Pages:** Login, Register, Projects list (with create dialog), Project detail with canvas + side panel, Project Settings (rename, env vars, pending changes), Profile, Settings (General, Users, System, About — admin-only)
 
 ## Commands
 
