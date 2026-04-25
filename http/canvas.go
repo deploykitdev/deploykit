@@ -642,12 +642,18 @@ func (c *canvasClient) handleServiceDraftCancel(payload json.RawMessage) {
 }
 
 func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.RawMessage) {
+	type envVarReq struct {
+		Key   string `json:"key"`
+		Value string `json:"value"`
+	}
 	var req struct {
-		DraftID string  `json:"draft_id"`
-		Name    string  `json:"name"`
-		Image   string  `json:"image"`
-		X       float64 `json:"x"`
-		Y       float64 `json:"y"`
+		DraftID string      `json:"draft_id"`
+		Name    string      `json:"name"`
+		Image   string      `json:"image"`
+		IconURL *string     `json:"icon_url,omitempty"`
+		X       float64     `json:"x"`
+		Y       float64     `json:"y"`
+		EnvVars []envVarReq `json:"env_vars,omitempty"`
 	}
 	if err := json.Unmarshal(payload, &req); err != nil || req.DraftID == "" {
 		c.sendError("Invalid service create payload.")
@@ -660,6 +666,26 @@ func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.Raw
 	if req.Image == "" {
 		c.sendCreateError(req.DraftID, "Image is required.")
 		return
+	}
+
+	envPayloads := make([]deploykit.EnvVarCreatePayload, 0, len(req.EnvVars))
+	seenKeys := make(map[string]struct{}, len(req.EnvVars))
+	for _, ev := range req.EnvVars {
+		create := deploykit.EnvVarCreate{Key: ev.Key, Value: ev.Value}
+		if err := create.Validate(); err != nil {
+			c.sendCreateError(req.DraftID, deploykit.ErrorMessage(err))
+			return
+		}
+		if _, dup := seenKeys[ev.Key]; dup {
+			c.sendCreateError(req.DraftID, "Duplicate env var key: "+ev.Key)
+			return
+		}
+		seenKeys[ev.Key] = struct{}{}
+		envPayloads = append(envPayloads, deploykit.EnvVarCreatePayload{
+			Scope: deploykit.EnvVarScopeService,
+			Key:   ev.Key,
+			Value: ev.Value,
+		})
 	}
 
 	// Place the canvas node up-front so everyone sees the pending service.
@@ -683,8 +709,10 @@ func (c *canvasClient) handleServiceCreate(ctx context.Context, payload json.Raw
 	}
 
 	pcPayload, err := json.Marshal(deploykit.ServiceCreatePayload{
-		Name:  req.Name,
-		Image: req.Image,
+		Name:    req.Name,
+		Image:   req.Image,
+		IconURL: req.IconURL,
+		EnvVars: envPayloads,
 	})
 	if err != nil {
 		c.logger.Error("marshaling service create payload", "err", err)

@@ -13,6 +13,7 @@ import (
 	"github.com/heyjorgedev/deploykit/docker"
 	"github.com/heyjorgedev/deploykit/events"
 	dkhttp "github.com/heyjorgedev/deploykit/http"
+	"github.com/heyjorgedev/deploykit/presets"
 	"github.com/heyjorgedev/deploykit/reconciler"
 	"github.com/heyjorgedev/deploykit/sqlite"
 	"github.com/heyjorgedev/deploykit/sysinfo"
@@ -86,6 +87,10 @@ func (m *Main) Run(ctx context.Context) error {
 	envVarService := sqlite.NewEnvVarService(m.DB)
 	pendingChangeService := sqlite.NewPendingChangeService(m.DB)
 	systemService := sysinfo.NewService(m.DockerClient, m.Logger, m.Config.DBPath, "dev", startedAt)
+	presetService, err := presets.New()
+	if err != nil {
+		return fmt.Errorf("loading presets: %w", err)
+	}
 
 	// Initialize event bus (in-process pub/sub).
 	bus := events.NewBus(m.Logger)
@@ -110,6 +115,7 @@ func (m *Main) Run(ctx context.Context) error {
 	m.HTTPServer.SystemService = systemService
 	m.HTTPServer.EnvVarService = envVarService
 	m.HTTPServer.PendingChangeService = pendingChangeService
+	m.HTTPServer.PresetService = presetService
 	m.HTTPServer.LogStreamer = m.DockerClient
 
 	if err := m.HTTPServer.Open(); err != nil {

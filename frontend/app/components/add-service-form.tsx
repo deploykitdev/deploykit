@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { NodeProps } from "@xyflow/react";
-import { GripVerticalIcon } from "lucide-react";
+import { GripVerticalIcon, Trash2Icon } from "lucide-react";
+import type { DraftEnvVar, ServiceDraftPrefill } from "@/lib/use-canvas-sync";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
 
@@ -8,20 +9,50 @@ export interface AddServiceFormData extends Record<string, unknown> {
   draftId: string;
   isSubmitting: boolean;
   errorMessage: string | null;
-  onSubmit: (draftId: string, values: { name: string; image: string }) => void;
+  prefill?: ServiceDraftPrefill;
+  onSubmit: (
+    draftId: string,
+    values: {
+      name: string;
+      image: string;
+      iconUrl?: string;
+      envVars?: DraftEnvVar[];
+    },
+  ) => void;
   onCancel: (draftId: string) => void;
 }
 
 export function AddServiceForm({ data }: NodeProps) {
-  const { draftId, isSubmitting, errorMessage, onSubmit, onCancel } =
+  const { draftId, isSubmitting, errorMessage, prefill, onSubmit, onCancel } =
     data as AddServiceFormData;
-  const [name, setName] = useState("");
-  const [image, setImage] = useState("");
+  const [name, setName] = useState(prefill?.name ?? "");
+  const [image, setImage] = useState(prefill?.image ?? "");
+  const [envVars, setEnvVars] = useState<DraftEnvVar[]>(
+    () => prefill?.envVars?.map((ev) => ({ ...ev })) ?? [],
+  );
   const nameInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     nameInputRef.current?.focus();
-  }, []);
+    if (prefill?.name) {
+      // Pre-filled name → select it so the user can rename quickly.
+      nameInputRef.current?.select();
+    }
+  }, [prefill?.name]);
+
+  function updateEnvVar(index: number, patch: Partial<DraftEnvVar>) {
+    setEnvVars((prev) =>
+      prev.map((ev, i) => (i === index ? { ...ev, ...patch } : ev)),
+    );
+  }
+
+  function removeEnvVar(index: number) {
+    setEnvVars((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function addEnvVar() {
+    setEnvVars((prev) => [...prev, { key: "", value: "" }]);
+  }
 
   return (
     <div
@@ -65,7 +96,15 @@ export function AddServiceForm({ data }: NodeProps) {
         onSubmit={(e) => {
           e.preventDefault();
           if (!name.trim() || !image.trim()) return;
-          onSubmit(draftId, { name: name.trim(), image: image.trim() });
+          const trimmedEnvVars = envVars
+            .map((ev) => ({ key: ev.key.trim(), value: ev.value }))
+            .filter((ev) => ev.key !== "");
+          onSubmit(draftId, {
+            name: name.trim(),
+            image: image.trim(),
+            iconUrl: prefill?.iconUrl,
+            envVars: trimmedEnvVars.length > 0 ? trimmedEnvVars : undefined,
+          });
         }}
         onKeyDown={(e) => {
           if (e.key === "Escape") {
@@ -111,6 +150,61 @@ export function AddServiceForm({ data }: NodeProps) {
             className="font-mono"
           />
         </div>
+
+        {(envVars.length > 0 || prefill) && (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[9px] font-medium uppercase tracking-[0.22em] text-muted-foreground/60">
+                Environment Variables
+              </span>
+              <button
+                type="button"
+                className="font-mono text-[9px] uppercase tracking-[0.22em] text-muted-foreground/70 hover:text-foreground"
+                onClick={addEnvVar}
+                disabled={isSubmitting}
+              >
+                + Add
+              </button>
+            </div>
+            {envVars.length > 0 && (
+              <div className="flex max-h-48 flex-col gap-1.5 overflow-y-auto">
+                {envVars.map((ev, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      value={ev.key}
+                      onChange={(e) =>
+                        updateEnvVar(i, { key: e.target.value })
+                      }
+                      placeholder="KEY"
+                      disabled={isSubmitting}
+                      autoComplete="off"
+                      className="h-7 flex-1 font-mono text-xs"
+                    />
+                    <Input
+                      value={ev.value}
+                      onChange={(e) =>
+                        updateEnvVar(i, { value: e.target.value })
+                      }
+                      placeholder="value"
+                      disabled={isSubmitting}
+                      autoComplete="off"
+                      className="h-7 flex-1 font-mono text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeEnvVar(i)}
+                      disabled={isSubmitting}
+                      className="text-muted-foreground/60 hover:text-destructive"
+                      title="Remove"
+                    >
+                      <Trash2Icon className="size-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {errorMessage ? (
           <p className="text-xs text-destructive">{errorMessage}</p>

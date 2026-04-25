@@ -66,12 +66,25 @@ export interface ServiceDraft {
   y: number;
 }
 
+export interface DraftEnvVar {
+  key: string;
+  value: string;
+}
+
+export interface ServiceDraftPrefill {
+  name?: string;
+  image?: string;
+  iconUrl?: string;
+  envVars?: DraftEnvVar[];
+}
+
 export interface LocalServiceDraft {
   draftId: string;
   x: number;
   y: number;
   isSubmitting: boolean;
   errorMessage: string | null;
+  prefill?: ServiceDraftPrefill;
 }
 
 function toFlowNode(dbNode: CanvasNode): Node {
@@ -563,21 +576,25 @@ export function useCanvasSync(projectId: string) {
     });
   }, []);
 
-  const openServiceDraft = useCallback((x: number, y: number) => {
-    const draftId = crypto.randomUUID();
-    setLocalDrafts((prev) => {
-      const next = new Map(prev);
-      next.set(draftId, {
-        draftId,
-        x,
-        y,
-        isSubmitting: false,
-        errorMessage: null,
+  const openServiceDraft = useCallback(
+    (x: number, y: number, prefill?: ServiceDraftPrefill) => {
+      const draftId = crypto.randomUUID();
+      setLocalDrafts((prev) => {
+        const next = new Map(prev);
+        next.set(draftId, {
+          draftId,
+          x,
+          y,
+          isSubmitting: false,
+          errorMessage: null,
+          prefill,
+        });
+        return next;
       });
-      return next;
-    });
-    wsRef.current?.send("service:draft-start", { draft_id: draftId, x, y });
-  }, []);
+      wsRef.current?.send("service:draft-start", { draft_id: draftId, x, y });
+    },
+    [],
+  );
 
   const cancelServiceDraft = useCallback((draftId: string) => {
     setLocalDrafts((prev) => {
@@ -616,13 +633,23 @@ export function useCanvasSync(projectId: string) {
   }, [localDrafts]);
 
   const submitServiceDraft = useCallback(
-    (draftId: string, values: { name: string; image: string }) => {
+    (
+      draftId: string,
+      values: {
+        name: string;
+        image: string;
+        iconUrl?: string;
+        envVars?: DraftEnvVar[];
+      },
+    ) => {
       const existing = localDraftsRef.current.get(draftId);
       if (!existing) return;
       wsRef.current?.send("service:create", {
         draft_id: draftId,
         name: values.name,
         image: values.image,
+        icon_url: values.iconUrl,
+        env_vars: values.envVars,
         x: existing.x,
         y: existing.y,
       });

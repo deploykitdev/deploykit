@@ -1,0 +1,9 @@
+id: redis
+name: Redis
+image: redis:7
+icon_url: https://cdn.jsdelivr.net/gh/devicons/devicon/icons/redis/redis-original.svg
+ports:
+  - container_port: 6379
+    protocol: tcp
+env_vars:
+  - { key: REDIS_PASSWORD, generate: password_24 }

@@ -1,0 +1,12 @@
+id: mariadb
+name: MariaDB
+image: mariadb:11
+icon_url: https://cdn.jsdelivr.net/gh/devicons/devicon/icons/mariadb/mariadb-original.svg
+ports:
+  - container_port: 3306
+    protocol: tcp
+env_vars:
+  - { key: MARIADB_DATABASE, value: app }
+  - { key: MARIADB_USER, value: app }
+  - { key: MARIADB_PASSWORD, generate: password_24 }
+  - { key: MARIADB_ROOT_PASSWORD, generate: password_24 }

@@ -163,6 +163,22 @@ export interface ApplyResult {
   created_deployments: Deployment[];
 }
 
+export interface PresetEnvVar {
+  key: string;
+  value: string;
+  // Present on List responses, stripped on Get responses (server materializes).
+  generate?: string;
+}
+
+export interface Preset {
+  id: string;
+  name: string;
+  image: string;
+  icon_url: string;
+  ports?: PortMapping[];
+  env_vars: PresetEnvVar[];
+}
+
 export const queryKeys = {
   projects: ["projects"] as const,
   project: (id: string) => ["projects", id] as const,
@@ -181,7 +197,24 @@ export const queryKeys = {
   users: ["users"] as const,
   systemAbout: ["system", "about"] as const,
   systemStatus: ["system", "status"] as const,
+  databasePresets: ["presets", "databases"] as const,
 };
+
+export function useDatabasePresets() {
+  return useQuery({
+    queryKey: queryKeys.databasePresets,
+    queryFn: () => api<Preset[]>("/presets/databases"),
+    // Catalog is static for the lifetime of the backend process.
+    staleTime: Infinity,
+  });
+}
+
+// fetchDatabasePreset is imperative on purpose: each call re-runs server-side
+// generators, so we want a fresh request when the user picks a preset card,
+// not a cached response.
+export function fetchDatabasePreset(id: string) {
+  return api<Preset>(`/presets/databases/${id}`);
+}
 
 export function useProjects() {
   return useQuery({

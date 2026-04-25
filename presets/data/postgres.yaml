@@ -1,0 +1,12 @@
+id: postgres
+name: PostgreSQL
+image: postgres:16
+icon_url: https://cdn.jsdelivr.net/gh/devicons/devicon/icons/postgresql/postgresql-original.svg
+ports:
+  - container_port: 5432
+    protocol: tcp
+env_vars:
+  - { key: POSTGRES_DB, value: app }
+  - { key: POSTGRES_USER, value: postgres }
+  - { key: POSTGRES_PASSWORD, generate: password_24 }
+  - { key: PGDATA, value: /var/lib/postgresql/data/pgdata }

@@ -48,6 +48,7 @@ type Server struct {
 	SystemService        deploykit.SystemService
 	EnvVarService        deploykit.EnvVarService
 	PendingChangeService deploykit.PendingChangeService
+	PresetService        deploykit.PresetService
 
 	// LogStreamer streams logs from a container runtime (Docker, Podman, …)
 	// for endpoints like /logs that can't be expressed through the domain
@@ -156,6 +157,9 @@ func (s *Server) registerRoutes() {
 	protected.HandleFunc("GET /projects/{projectId}/services/{serviceId}/env-vars", s.handleListServiceEnvVars)
 	protected.HandleFunc("PATCH /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleUpdateServiceEnvVar)
 	protected.HandleFunc("DELETE /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleDeleteServiceEnvVar)
+
+	protected.HandleFunc("GET /presets/databases", s.handleListDatabasePresets)
+	protected.HandleFunc("GET /presets/databases/{presetId}", s.handleGetDatabasePreset)
 
 	protected.HandleFunc("GET /projects/{projectId}/pending-changes", s.handleListPendingChanges)
 	protected.HandleFunc("DELETE /projects/{projectId}/pending-changes", s.handleDiscardPendingChanges)

@@ -18,6 +18,7 @@ import { collectServiceOverrides } from "@/lib/pending-changes-diff";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
 import { CanvasContextMenu } from "./canvas-context-menu";
+import { AddDatabaseDialog } from "./add-database-dialog";
 import { NodeContextMenu } from "./node-context-menu";
 import { CanvasControls } from "./canvas-controls";
 import { AddServiceForm } from "./add-service-form";
@@ -133,6 +134,9 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   const [menu, setMenu] = useState<
     | { screenX: number; screenY: number; flowX: number; flowY: number }
     | null
+  >(null);
+  const [databaseDialog, setDatabaseDialog] = useState<
+    { flowX: number; flowY: number } | null
   >(null);
   const [nodeMenu, setNodeMenu] = useState<
     { screenX: number; screenY: number; nodeId: string } | null
@@ -265,6 +269,11 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     openServiceDraft(menu.flowX, menu.flowY);
   }, [menu, openServiceDraft]);
 
+  const handleAddDatabase = useCallback(() => {
+    if (!menu) return;
+    setDatabaseDialog({ flowX: menu.flowX, flowY: menu.flowY });
+  }, [menu]);
+
   const decoratedNodes = useMemo<Node[]>(() => {
     if (
       servicesById.size === 0 &&
@@ -339,6 +348,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       });
     }
     for (const [, draft] of localDrafts) {
+      const hasPrefill = !!draft.prefill;
       extras.push({
         id: `draft-${draft.draftId}`,
         type: "service-draft",
@@ -347,14 +357,21 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
           draftId: draft.draftId,
           isSubmitting: draft.isSubmitting,
           errorMessage: draft.errorMessage,
+          prefill: draft.prefill,
           onSubmit: submitServiceDraft,
           onCancel: cancelServiceDraft,
         },
         selectable: false,
         dragHandle: ".service-draft-drag-handle",
         initialWidth: DRAFT_NODE_WIDTH,
-        initialHeight: DRAFT_NODE_HEIGHT,
-        style: { width: DRAFT_NODE_WIDTH, height: DRAFT_NODE_HEIGHT },
+        // Height is auto when a prefill (with env vars) is present; React
+        // Flow measures the rendered node so the form can grow.
+        ...(hasPrefill
+          ? { style: { width: DRAFT_NODE_WIDTH } }
+          : {
+              initialHeight: DRAFT_NODE_HEIGHT,
+              style: { width: DRAFT_NODE_WIDTH, height: DRAFT_NODE_HEIGHT },
+            }),
       });
     }
     return [...decoratedNodes, ...extras];
@@ -449,6 +466,26 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         position={menu ? { x: menu.screenX, y: menu.screenY } : null}
         onClose={closeMenu}
         onAddService={handleAddService}
+        onAddDatabase={handleAddDatabase}
+      />
+      <AddDatabaseDialog
+        open={databaseDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setDatabaseDialog(null);
+        }}
+        onPick={(preset) => {
+          if (!databaseDialog) return;
+          openServiceDraft(databaseDialog.flowX, databaseDialog.flowY, {
+            name: preset.id,
+            image: preset.image,
+            iconUrl: preset.icon_url,
+            envVars: preset.env_vars.map((ev) => ({
+              key: ev.key,
+              value: ev.value,
+            })),
+          });
+          setDatabaseDialog(null);
+        }}
       />
       <NodeContextMenu
         position={
