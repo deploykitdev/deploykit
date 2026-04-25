@@ -1,3 +1,5 @@
+import { tryRefresh } from "./api";
+
 type MessageHandler = (payload: unknown) => void;
 
 export interface WSMessage {
@@ -21,6 +23,7 @@ export class CanvasWebSocket {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 15;
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+  private connectTimer: ReturnType<typeof setTimeout> | null = null;
   private intentionallyClosed = false;
 
   constructor(private projectId: string) {}
@@ -46,6 +49,22 @@ export class CanvasWebSocket {
 
     this.intentionallyClosed = false;
     this.setStatus("connecting");
+
+    // Defer the actual WebSocket creation so a synchronous mount → unmount →
+    // remount cycle (React StrictMode in dev) can cancel it via disconnect()
+    // before the browser starts a real handshake. Otherwise we open a socket
+    // that gets aborted milliseconds later, producing "WebSocket is closed
+    // before the connection is established" warnings and occasionally leaving
+    // the canvas state un-synced.
+    if (this.connectTimer) clearTimeout(this.connectTimer);
+    this.connectTimer = setTimeout(() => {
+      this.connectTimer = null;
+      if (this.intentionallyClosed) return;
+      this.openSocket();
+    }, 0);
+  }
+
+  private openSocket() {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const host = window.location.host;
     const url = `${protocol}//${host}/api/projects/${this.projectId}/canvas/ws`;
@@ -84,6 +103,13 @@ export class CanvasWebSocket {
         return;
       }
       this.setStatus("reconnecting");
+      // Server rejects with 4001 when the access token failed to validate.
+      // Refresh once before reconnecting so we don't burn the backoff loop
+      // sending the same expired token over and over.
+      if (event.code === 4001) {
+        this.refreshAndReconnect();
+        return;
+      }
       this.scheduleReconnect();
     };
 
@@ -135,6 +161,10 @@ export class CanvasWebSocket {
       clearTimeout(this.reconnectTimeout);
       this.reconnectTimeout = null;
     }
+    if (this.connectTimer) {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = null;
+    }
     this.ws?.close(1000);
     this.ws = null;
     this.setStatus("disconnected");
@@ -160,5 +190,19 @@ export class CanvasWebSocket {
       this.reconnectTimeout = null;
       this.connect();
     }, delay);
+  }
+
+  private async refreshAndReconnect() {
+    const refreshed = await tryRefresh();
+    if (this.intentionallyClosed) return;
+    if (!refreshed) {
+      // No usable refresh token — fall back to the regular backoff loop so
+      // the user gets a chance to log in / retry rather than spinning fast.
+      this.scheduleReconnect();
+      return;
+    }
+    // Reset backoff on successful refresh and reconnect immediately.
+    this.reconnectAttempts = 0;
+    this.connect();
   }
 }
