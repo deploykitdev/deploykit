@@ -103,6 +103,9 @@ function toFlowNode(dbNode: CanvasNode): Node {
     case "service":
       flowType = "service";
       break;
+    case "note":
+      flowType = "note";
+      break;
     default:
       flowType = "default";
   }
@@ -190,7 +193,15 @@ export function useCanvasSync(projectId: string) {
         const idx = prev.findIndex((n) => n.id === flowNode.id);
         if (idx >= 0) {
           const next = [...prev];
-          next[idx] = flowNode;
+          // Preserve React Flow's transient interaction flags so a server
+          // round-trip (e.g. a sticky-note color save) doesn't drop the
+          // user's selection / drag state mid-interaction.
+          const prevNode = prev[idx];
+          next[idx] = {
+            ...flowNode,
+            selected: prevNode.selected,
+            dragging: prevNode.dragging,
+          };
           return next;
         }
         return [...prev, flowNode];
@@ -610,6 +621,49 @@ export function useCanvasSync(projectId: string) {
     wsRef.current?.send("node:delete", { id: nodeId });
   }, []);
 
+  const addNote = useCallback(
+    (x: number, y: number, backgroundColor: string) => {
+      const id = crypto.randomUUID();
+      wsRef.current?.send("node:upsert", {
+        id,
+        type: "note",
+        label: "",
+        position_x: x,
+        position_y: y,
+        width: 220,
+        height: 220,
+        data: JSON.stringify({ backgroundColor }),
+      });
+    },
+    [],
+  );
+
+  // Keep a ref to the latest nodes so commitNote can look up the current
+  // position without forcing the callback (and the dynamic nodeTypes map that
+  // closes over it) to re-create on every node state update.
+  const nodesRef = useRef<Node[]>(nodes);
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  const commitNote = useCallback(
+    (id: string, label: string, backgroundColor: string) => {
+      const node = nodesRef.current.find((n) => n.id === id);
+      if (!node) return;
+      wsRef.current?.send("node:upsert", {
+        id,
+        type: "note",
+        label,
+        position_x: node.position.x,
+        position_y: node.position.y,
+        width: 220,
+        height: 220,
+        data: JSON.stringify({ backgroundColor }),
+      });
+    },
+    [],
+  );
+
   const moveLocalDraft = useCallback(
     (draftId: string, x: number, y: number) => {
       setLocalDrafts((prev) => {
@@ -689,5 +743,7 @@ export function useCanvasSync(projectId: string) {
     submitServiceDraft,
     moveLocalDraft,
     deleteNode,
+    addNote,
+    commitNote,
   };
 }

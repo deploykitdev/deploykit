@@ -24,6 +24,7 @@ import { CanvasControls } from "./canvas-controls";
 import { AddServiceForm } from "./add-service-form";
 import { DraftingServiceGhost } from "./drafting-service-ghost";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
+import { NoteNode, NOTE_DEFAULT_COLOR } from "./note-node";
 import { ServiceDetailPanel } from "./service-detail-panel";
 import { PendingChangesPanel } from "./pending-changes-panel";
 import { PendingServicePanel } from "./pending-service-panel";
@@ -33,6 +34,7 @@ const nodeTypes = {
   service: ServiceNode,
   "service-draft": AddServiceForm,
   "service-drafting": DraftingServiceGhost,
+  note: NoteNode,
 };
 
 const edgeTypes = {
@@ -76,6 +78,8 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     submitServiceDraft,
     moveLocalDraft,
     deleteNode,
+    addNote,
+    commitNote,
   } = useCanvasSync(projectId);
 
   const { data: servicesData } = useProjectServices(projectId);
@@ -274,14 +278,21 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     setDatabaseDialog({ flowX: menu.flowX, flowY: menu.flowY });
   }, [menu]);
 
+  const handleAddNote = useCallback(() => {
+    if (!menu) return;
+    // Center the 220×220 note on the click point.
+    addNote(menu.flowX - 110, menu.flowY - 110, NOTE_DEFAULT_COLOR);
+  }, [menu, addNote]);
+
   const decoratedNodes = useMemo<Node[]>(() => {
-    if (
-      servicesById.size === 0 &&
-      pendingOverridesByServiceId.size === 0
-    ) {
-      return nodes;
-    }
     return nodes.map((n) => {
+      if (n.type === "note") {
+        // Inject the commit callback into note data so the component can
+        // persist text/color edits without prop drilling.
+        const data = (n.data ?? {}) as Record<string, unknown>;
+        if (data.commitNote === commitNote) return n;
+        return { ...n, data: { ...data, commitNote } };
+      }
       if (n.type !== "service") return n;
       const data = n.data as ServiceNodeData | undefined;
       const serviceId = data?.serviceId;
@@ -318,7 +329,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         },
       };
     });
-  }, [nodes, servicesById, pendingOverridesByServiceId]);
+  }, [nodes, servicesById, pendingOverridesByServiceId, commitNote]);
 
   // Close the detail panel if the selected service gets marked for deletion.
   // Otherwise the user could edit a service they're about to drop.
@@ -467,6 +478,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         onClose={closeMenu}
         onAddService={handleAddService}
         onAddDatabase={handleAddDatabase}
+        onAddNote={handleAddNote}
       />
       <AddDatabaseDialog
         open={databaseDialog !== null}

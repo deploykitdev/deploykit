@@ -10,6 +10,7 @@ const (
 	CanvasNodeTypeService = "service"
 	CanvasNodeTypeLabel   = "label"
 	CanvasNodeTypeGroup   = "group"
+	CanvasNodeTypeNote    = "note"
 )
 
 // CanvasEdgeManagedEnvRef marks an edge that the system maintains in response
