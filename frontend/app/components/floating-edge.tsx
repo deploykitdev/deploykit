@@ -12,65 +12,78 @@ import {
 // FloatingEdge anchors its endpoints to the closest point on each node's
 // bounding box, so the connection slides around the perimeter as nodes move
 // rather than always anchoring to fixed left/right handles.
+//
+// Side selection is slope-based (compare |dy| * hw vs |dx| * hh) rather than
+// rounding the boundary point and matching it back to a ±1px window of an
+// edge — that older approach flipped between sides under subpixel measurement
+// jitter, causing the path to flicker when nothing was actually moving.
 
-function getNodeCenterIntersection(
-  node: InternalNode<Node>,
-  other: InternalNode<Node>,
-) {
-  const nodePos = node.internals.positionAbsolute;
-  const otherPos = other.internals.positionAbsolute;
-
-  const w = (node.measured.width ?? 0) / 2;
-  const h = (node.measured.height ?? 0) / 2;
-
-  const x2 = nodePos.x + w;
-  const y2 = nodePos.y + h;
-  const x1 = otherPos.x + (other.measured.width ?? 0) / 2;
-  const y1 = otherPos.y + (other.measured.height ?? 0) / 2;
-
-  const xx1 = (x1 - x2) / (2 * w) - (y1 - y2) / (2 * h);
-  const yy1 = (x1 - x2) / (2 * w) + (y1 - y2) / (2 * h);
-  const a = 1 / (Math.abs(xx1) + Math.abs(yy1) || 1);
-  const xx3 = a * xx1;
-  const yy3 = a * yy1;
-  const x = w * (xx3 + yy3) + x2;
-  const y = h * (-xx3 + yy3) + y2;
-
-  return { x, y };
+interface BoundaryPoint {
+  x: number;
+  y: number;
+  pos: Position;
 }
 
-function getEdgePosition(
-  node: InternalNode<Node>,
-  point: { x: number; y: number },
-): Position {
+function projectOntoBox(
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  ox: number,
+  oy: number,
+): BoundaryPoint {
+  if (w <= 0 || h <= 0) return { x: cx, y: cy, pos: Position.Right };
+
+  const dx = ox - cx;
+  const dy = oy - cy;
+  const hw = w / 2;
+  const hh = h / 2;
+
+  if (dx === 0 && dy === 0) {
+    return { x: cx + hw, y: cy, pos: Position.Right };
+  }
+
+  // Compare |dy/dx| against the corner slope hh/hw without division — this
+  // stays stable under subpixel jitter, unlike rounding the boundary point.
+  if (Math.abs(dy) * hw > Math.abs(dx) * hh) {
+    const t = hh / Math.abs(dy);
+    return {
+      x: cx + dx * t,
+      y: dy > 0 ? cy + hh : cy - hh,
+      pos: dy > 0 ? Position.Bottom : Position.Top,
+    };
+  }
+
+  const t = hw / Math.abs(dx);
+  return {
+    x: dx > 0 ? cx + hw : cx - hw,
+    y: cy + dy * t,
+    pos: dx > 0 ? Position.Right : Position.Left,
+  };
+}
+
+function nodeCenter(node: InternalNode<Node>) {
   const pos = node.internals.positionAbsolute;
-  const nx = Math.round(pos.x);
-  const ny = Math.round(pos.y);
-  const px = Math.round(point.x);
-  const py = Math.round(point.y);
   const w = node.measured.width ?? 0;
   const h = node.measured.height ?? 0;
-
-  if (px <= nx + 1) return Position.Left;
-  if (px >= nx + w - 1) return Position.Right;
-  if (py <= ny + 1) return Position.Top;
-  if (py >= ny + h - 1) return Position.Bottom;
-  return Position.Top;
+  return { cx: pos.x + w / 2, cy: pos.y + h / 2, w, h };
 }
 
 function getEdgeParams(
   source: InternalNode<Node>,
   target: InternalNode<Node>,
 ) {
-  const sp = getNodeCenterIntersection(source, target);
-  const tp = getNodeCenterIntersection(target, source);
+  const s = nodeCenter(source);
+  const t = nodeCenter(target);
+  const sp = projectOntoBox(s.cx, s.cy, s.w, s.h, t.cx, t.cy);
+  const tp = projectOntoBox(t.cx, t.cy, t.w, t.h, s.cx, s.cy);
   return {
     sx: sp.x,
     sy: sp.y,
     tx: tp.x,
     ty: tp.y,
-    sourcePos: getEdgePosition(source, sp),
-    targetPos: getEdgePosition(target, tp),
+    sourcePos: sp.pos,
+    targetPos: tp.pos,
   };
 }
 

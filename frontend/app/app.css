@@ -143,3 +143,14 @@
   40%  { opacity: 1; }
   100% { transform: translateY(100%); opacity: 0; }
 }
+
+/* Continuously flowing dashes for managed (env-ref) edges. The pattern length
+   is 8px (4 dash + 4 gap), so animating stroke-dashoffset by -8 produces a
+   seamless loop with no rewind. */
+@keyframes managed-edge-flow {
+  to { stroke-dashoffset: -8; }
+}
+
+.react-flow__edge.managed-edge .react-flow__edge-path {
+  animation: managed-edge-flow 0.6s linear infinite;
+}

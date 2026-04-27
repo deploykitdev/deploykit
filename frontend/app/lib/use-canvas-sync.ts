@@ -141,7 +141,7 @@ function toFlowEdge(dbEdge: CanvasEdge): Edge {
     ...(isManaged
       ? {
           deletable: false,
-          animated: true,
+          className: "managed-edge",
           style: { stroke: "var(--color-primary)", strokeDasharray: "4 4" },
           labelStyle: { fontSize: 10, color: "var(--color-primary)" },
           data: { managed },
