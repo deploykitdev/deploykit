@@ -5,9 +5,11 @@ project_name: deploykit
 before:
   hooks:
     - go mod tidy
-    # Build the SPA so it can be embedded into the binary.
+    # Build the SPA so it can be embedded into the binary. http/spa_assets/
+    # is .gitignored, so on a fresh CI checkout it doesn't exist yet — mkdir
+    # -p before the copy.
     - sh -c "cd frontend && npm ci && npm run build"
-    - sh -c "rm -rf http/spa_assets/dist && cp -r frontend/build/client http/spa_assets/dist"
+    - sh -c "rm -rf http/spa_assets/dist && mkdir -p http/spa_assets && cp -r frontend/build/client http/spa_assets/dist"
 
 builds:
   - id: deploykitd
