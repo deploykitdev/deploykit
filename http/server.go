@@ -176,6 +176,11 @@ func (s *Server) registerRoutes() {
 
 	protected.Handle("GET /system/about", adminOnly(http.HandlerFunc(s.handleGetAbout)))
 	protected.Handle("GET /system/status", adminOnly(http.HandlerFunc(s.handleGetSystemStatus)))
+	protected.Handle("GET /system/release", adminOnly(http.HandlerFunc(s.handleGetLatestRelease)))
+	protected.Handle("POST /system/upgrade", adminOnly(http.HandlerFunc(s.handleRequestUpgrade)))
+	protected.Handle("GET /system/upgrade", adminOnly(http.HandlerFunc(s.handleGetUpgradeStatus)))
+	protected.Handle("GET /system/settings", adminOnly(http.HandlerFunc(s.handleGetSystemSettings)))
+	protected.Handle("PATCH /system/settings", adminOnly(http.HandlerFunc(s.handleUpdateSystemSettings)))
 
 	protected.HandleFunc("GET /api-keys", s.handleListAPIKeys)
 	protected.HandleFunc("POST /api-keys", s.handleCreateAPIKey)

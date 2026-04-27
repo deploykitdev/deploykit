@@ -11,6 +11,7 @@ package sysinfo
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -29,24 +30,75 @@ import (
 
 // Service implements deploykit.SystemService.
 type Service struct {
-	docker    *docker.Client
-	logger    *slog.Logger
-	dbPath    string
-	version   string
-	startedAt time.Time
+	docker     *docker.Client
+	logger     *slog.Logger
+	dbPath     string
+	version    string
+	startedAt  time.Time
+	githubRepo string
+	http       *http.Client
+	upgrades   upgradeFiles
+	releases   releaseCache
+	settings   SettingsStore
+	services   ServiceLister
 }
 
-// NewService constructs a Service. version is the deploykit build version
-// to report in the About payload (currently "dev"). startedAt should be the
-// process start time, used to compute uptime.
-func NewService(d *docker.Client, logger *slog.Logger, dbPath, version string, startedAt time.Time) *Service {
-	return &Service{
-		docker:    d,
-		logger:    logger,
-		dbPath:    dbPath,
-		version:   version,
-		startedAt: startedAt,
+// Config holds the dependencies sysinfo.Service needs beyond the per-call
+// arguments. Fields are optional; an empty Config still yields a working
+// Service that can serve About/Status but cannot poll releases or trigger
+// upgrades.
+type Config struct {
+	Docker     *docker.Client
+	Logger     *slog.Logger
+	DBPath     string
+	Version    string
+	StartedAt  time.Time
+	DataDir    string
+	GitHubRepo string
+	HTTP       *http.Client
+	Settings   SettingsStore
+	Services   ServiceLister
+}
+
+// New constructs a Service from cfg.
+func New(cfg Config) *Service {
+	httpClient := cfg.HTTP
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	dataDir := cfg.DataDir
+	if dataDir == "" {
+		dataDir = filepath.Dir(cfg.DBPath)
+	}
+	repo := cfg.GitHubRepo
+	if repo == "" {
+		repo = "deploykitdev/deploykit"
+	}
+	return &Service{
+		docker:     cfg.Docker,
+		logger:     cfg.Logger,
+		dbPath:     cfg.DBPath,
+		version:    cfg.Version,
+		startedAt:  cfg.StartedAt,
+		githubRepo: repo,
+		http:       httpClient,
+		upgrades:   newUpgradeFiles(dataDir),
+		settings:   cfg.Settings,
+		services:   cfg.Services,
+	}
+}
+
+// NewService is the legacy constructor preserved for backward compatibility
+// with callers that don't yet wire upgrade machinery. New code should use
+// New(Config{...}).
+func NewService(d *docker.Client, logger *slog.Logger, dbPath, version string, startedAt time.Time) *Service {
+	return New(Config{
+		Docker:    d,
+		Logger:    logger,
+		DBPath:    dbPath,
+		Version:   version,
+		StartedAt: startedAt,
+	})
 }
 
 // About returns a snapshot of static deploykit/Docker/database info.
@@ -59,6 +111,12 @@ func (s *Service) About(ctx context.Context) (*deploykit.SystemAbout, error) {
 		},
 		Docker:   s.dockerInfo(ctx),
 		Database: s.databaseInfo(),
+	}
+	if r := s.releases.get(); r != nil {
+		about.LatestRelease = r
+		if cmp, ok := compareVersions(s.version, r.Version); ok && cmp < 0 {
+			about.UpdateAvailable = true
+		}
 	}
 	return about, nil
 }

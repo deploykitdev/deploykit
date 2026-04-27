@@ -9,6 +9,7 @@ import {
   CardAction,
 } from "@/components/ui/card";
 import { RefreshCw, AlertCircle } from "lucide-react";
+import { SystemUpdateCard } from "@/components/system-update-card";
 
 export default function SettingsAbout() {
   const { data, isLoading, refetch, isFetching } = useSystemAbout();
@@ -54,6 +55,8 @@ export default function SettingsAbout() {
           />
         </CardContent>
       </Card>
+
+      <SystemUpdateCard about={data} onUpgradeFinished={() => refetch()} />
 
       <Card>
         <CardHeader>

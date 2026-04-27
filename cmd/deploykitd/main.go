@@ -19,22 +19,35 @@ import (
 	"github.com/heyjorgedev/deploykit/sysinfo"
 )
 
+// Build metadata, populated by goreleaser via -ldflags. Defaults are used
+// for local `go build` / `go run` invocations.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 // Config represents the application configuration.
 type Config struct {
 	Addr              string
 	DBPath            string
+	DataDir           string
 	LogLevel          string
 	CORSOrigin        string
+	GitHubRepo        string
 	ReconcileInterval time.Duration
 }
 
-// DefaultConfig returns the default configuration.
+// DefaultConfig returns the default configuration. DataDir falls back to
+// $DEPLOYKIT_DATA_DIR (set by the systemd unit) or the directory of DBPath.
 func DefaultConfig() Config {
 	return Config{
 		Addr:              ":8080",
 		DBPath:            "deploykit.db",
+		DataDir:           os.Getenv("DEPLOYKIT_DATA_DIR"),
 		LogLevel:          "info",
 		CORSOrigin:        "*",
+		GitHubRepo:        "deploykitdev/deploykit",
 		ReconcileInterval: 30 * time.Second,
 	}
 }
@@ -86,7 +99,18 @@ func (m *Main) Run(ctx context.Context) error {
 	canvasService := sqlite.NewCanvasService(m.DB)
 	envVarService := sqlite.NewEnvVarService(m.DB)
 	pendingChangeService := sqlite.NewPendingChangeService(m.DB)
-	systemService := sysinfo.NewService(m.DockerClient, m.Logger, m.Config.DBPath, "dev", startedAt)
+	systemSettingsStore := sqlite.NewSystemSettingsStore(m.DB)
+	systemService := sysinfo.New(sysinfo.Config{
+		Docker:     m.DockerClient,
+		Logger:     m.Logger,
+		DBPath:     m.Config.DBPath,
+		Version:    version,
+		StartedAt:  startedAt,
+		DataDir:    m.Config.DataDir,
+		GitHubRepo: m.Config.GitHubRepo,
+		Settings:   systemSettingsStore,
+		Services:   serviceService,
+	})
 	presetService, err := presets.New()
 	if err != nil {
 		return fmt.Errorf("loading presets: %w", err)
@@ -138,6 +162,37 @@ func (m *Main) Run(ctx context.Context) error {
 		}
 	}()
 
+	// Poll the upstream release feed once at startup (after a short delay
+	// so we don't slow boot) and once a day thereafter. Failures are
+	// logged at debug level — release info is best-effort.
+	go func() {
+		select {
+		case <-time.After(30 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			if _, err := systemService.RefreshLatestRelease(ctx); err != nil {
+				m.Logger.Debug("refreshing latest release", "err", err)
+			} else if settings, err := systemService.GetSettings(ctx); err == nil && settings.AutoUpdate {
+				if release, err := systemService.LatestRelease(ctx); err == nil && release != nil {
+					if err := systemService.RequestUpgrade(ctx, release.Version); err != nil {
+						m.Logger.Debug("auto-update skipped", "err", err)
+					} else {
+						m.Logger.Info("auto-update queued", "version", release.Version)
+					}
+				}
+			}
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// Wait for context cancellation.
 	<-ctx.Done()
 
@@ -171,12 +226,21 @@ func (m *Main) Close() error {
 func main() {
 	cfg := DefaultConfig()
 
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.StringVar(&cfg.Addr, "addr", cfg.Addr, "HTTP listen address")
 	flag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
+	flag.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "Directory for upgrade trigger and status files (defaults to dirname of -db)")
 	flag.StringVar(&cfg.LogLevel, "log-level", cfg.LogLevel, "Log level (debug, info, warn, error)")
 	flag.StringVar(&cfg.CORSOrigin, "cors-origin", cfg.CORSOrigin, "Allowed CORS origin")
+	flag.StringVar(&cfg.GitHubRepo, "github-repo", cfg.GitHubRepo, "owner/repo to poll for upstream releases")
 	flag.DurationVar(&cfg.ReconcileInterval, "reconcile-interval", cfg.ReconcileInterval, "Interval between reconciliation cycles")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("deploykitd %s (commit %s, built %s)\n", version, commit, date)
+		return
+	}
 
 	// Parse log level.
 	var level slog.Level

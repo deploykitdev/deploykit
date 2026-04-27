@@ -51,6 +51,14 @@ export interface Service {
   active_deployment?: Deployment | null;
 }
 
+export interface ReleaseInfo {
+  version: string;
+  url: string;
+  notes?: string;
+  published_at: string;
+  fetched_at: string;
+}
+
 export interface SystemAbout {
   deploykit: {
     version: string;
@@ -75,6 +83,28 @@ export interface SystemAbout {
     path: string;
     size_bytes: number;
   };
+  latest_release?: ReleaseInfo;
+  update_available: boolean;
+}
+
+export type UpgradeState =
+  | "idle"
+  | "queued"
+  | "running"
+  | "done"
+  | "failed";
+
+export interface UpgradeStatus {
+  state: UpgradeState;
+  target_version?: string;
+  started_at?: string;
+  finished_at?: string;
+  error?: string;
+  log_tail?: string;
+}
+
+export interface SystemSettings {
+  auto_update: boolean;
 }
 
 export interface SystemStatus {
@@ -197,6 +227,9 @@ export const queryKeys = {
   users: ["users"] as const,
   systemAbout: ["system", "about"] as const,
   systemStatus: ["system", "status"] as const,
+  systemRelease: ["system", "release"] as const,
+  systemUpgrade: ["system", "upgrade"] as const,
+  systemSettings: ["system", "settings"] as const,
   databasePresets: ["presets", "databases"] as const,
 };
 
@@ -392,6 +425,63 @@ export function useSystemStatus() {
     queryFn: () => api<SystemStatus>("/system/status"),
     refetchInterval: 3000,
     refetchIntervalInBackground: false,
+  });
+}
+
+export function useRefreshLatestRelease() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api<ReleaseInfo>("/system/release?refresh=1"),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.systemAbout });
+      qc.invalidateQueries({ queryKey: queryKeys.systemRelease });
+    },
+  });
+}
+
+export function useUpgradeStatus(opts: { enabled?: boolean; refetchMs?: number } = {}) {
+  const { enabled = true, refetchMs } = opts;
+  return useQuery({
+    queryKey: queryKeys.systemUpgrade,
+    queryFn: () => api<UpgradeStatus>("/system/upgrade"),
+    enabled,
+    refetchInterval: refetchMs,
+  });
+}
+
+export function useRequestUpgrade() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (version: string) =>
+      api<UpgradeStatus>("/system/upgrade", {
+        method: "POST",
+        body: JSON.stringify({ version }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.systemUpgrade });
+    },
+  });
+}
+
+export function useSystemSettings() {
+  return useQuery({
+    queryKey: queryKeys.systemSettings,
+    queryFn: () => api<SystemSettings>("/system/settings"),
+  });
+}
+
+export function useUpdateSystemSettings() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (update: Partial<SystemSettings>) =>
+      api<SystemSettings>("/system/settings", {
+        method: "PATCH",
+        body: JSON.stringify(update),
+      }),
+    onSuccess: (data) => {
+      qc.setQueryData(queryKeys.systemSettings, data);
+    },
   });
 }
 

@@ -18,14 +18,80 @@ type SystemService interface {
 	// object counts. Like About, Status tolerates an unreachable Docker
 	// daemon and returns partial data rather than failing.
 	Status(ctx context.Context) (*SystemStatus, error)
+
+	// LatestRelease returns cached information about the most recent upstream
+	// release. It returns ENOTFOUND when no poll has succeeded yet.
+	LatestRelease(ctx context.Context) (*ReleaseInfo, error)
+
+	// RefreshLatestRelease forces a poll of the upstream release feed and
+	// updates the cache. Safe to call from a UI "Check now" action.
+	RefreshLatestRelease(ctx context.Context) (*ReleaseInfo, error)
+
+	// RequestUpgrade asks the privileged upgrade unit to install the given
+	// version. Returns ECONFLICT if a deployment is in progress, EINVALID
+	// if the version is malformed, and EFORBIDDEN if it would be a downgrade.
+	RequestUpgrade(ctx context.Context, version string) error
+
+	// UpgradeStatus reports the state of the most recent (or in-progress)
+	// upgrade attempt, including a tail of the runner's log.
+	UpgradeStatus(ctx context.Context) (*UpgradeStatus, error)
+
+	// GetSettings returns the persisted system-wide settings.
+	GetSettings(ctx context.Context) (*SystemSettings, error)
+
+	// UpdateSettings persists changes to system-wide settings. Only non-nil
+	// fields on the update payload are applied.
+	UpdateSettings(ctx context.Context, update SystemSettingsUpdate) (*SystemSettings, error)
+}
+
+// ReleaseInfo describes a published deploykit release.
+type ReleaseInfo struct {
+	Version     string    `json:"version"`
+	URL         string    `json:"url"`
+	Notes       string    `json:"notes,omitempty"`
+	PublishedAt time.Time `json:"published_at"`
+	FetchedAt   time.Time `json:"fetched_at"`
+}
+
+// UpgradeState enumerates the lifecycle of an upgrade request.
+const (
+	UpgradeStateIdle     = "idle"     // no upgrade has ever been requested
+	UpgradeStateQueued   = "queued"   // request file written, runner not yet picked up
+	UpgradeStateRunning  = "running"  // runner actively installing
+	UpgradeStateDone     = "done"     // last run succeeded
+	UpgradeStateFailed   = "failed"   // last run failed
+)
+
+// UpgradeStatus is the JSON status the privileged upgrade unit writes to
+// $DATA_DIR/upgrade.status, augmented with a log tail.
+type UpgradeStatus struct {
+	State          string    `json:"state"`
+	TargetVersion  string    `json:"target_version,omitempty"`
+	StartedAt      time.Time `json:"started_at,omitzero"`
+	FinishedAt     time.Time `json:"finished_at,omitzero"`
+	Error          string    `json:"error,omitempty"`
+	LogTail        string    `json:"log_tail,omitempty"`
+}
+
+// SystemSettings is the persisted instance-wide configuration surface.
+type SystemSettings struct {
+	AutoUpdate bool `json:"auto_update"`
+}
+
+// SystemSettingsUpdate carries partial updates to SystemSettings. Nil fields
+// are left unchanged.
+type SystemSettingsUpdate struct {
+	AutoUpdate *bool `json:"auto_update,omitempty"`
 }
 
 // SystemAbout is the static "what am I running" view returned by
 // SystemService.About.
 type SystemAbout struct {
-	DeployKit DeployKitInfo `json:"deploykit"`
-	Docker    DockerInfo    `json:"docker"`
-	Database  DatabaseInfo  `json:"database"`
+	DeployKit       DeployKitInfo `json:"deploykit"`
+	Docker          DockerInfo    `json:"docker"`
+	Database        DatabaseInfo  `json:"database"`
+	LatestRelease   *ReleaseInfo  `json:"latest_release,omitempty"`
+	UpdateAvailable bool          `json:"update_available"`
 }
 
 // DeployKitInfo describes the running deploykit binary.
