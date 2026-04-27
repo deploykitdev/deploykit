@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 func TestEnvVarKeyTaken(t *testing.T) {

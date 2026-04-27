@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 func TestNewLoadsAllEmbeddedPresets(t *testing.T) {

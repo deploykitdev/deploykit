@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // ServiceService implements deploykit.ServiceService using SQLite.

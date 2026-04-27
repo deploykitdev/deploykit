@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 	"golang.org/x/crypto/bcrypt"
 )
 

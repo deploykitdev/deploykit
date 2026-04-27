@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // mockProjectService implements deploykit.ProjectService for testing.

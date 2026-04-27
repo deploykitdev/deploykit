@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 func MustCreateAuthUser(t *testing.T, db *DB, email, name, password string) *deploykit.User {

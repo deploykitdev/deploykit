@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // handleListPendingChanges returns the project's pending change log.

@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/coder/websocket"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 const (

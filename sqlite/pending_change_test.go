@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
-	"github.com/heyjorgedev/deploykit/sqlite"
+	"github.com/deploykitdev/deploykit"
+	"github.com/deploykitdev/deploykit/sqlite"
 )
 
 func TestPendingChangeService_AppendAndList(t *testing.T) {

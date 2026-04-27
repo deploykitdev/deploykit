@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
-	"github.com/heyjorgedev/deploykit/events"
+	"github.com/deploykitdev/deploykit"
+	"github.com/deploykitdev/deploykit/events"
 )
 
 func newTestBus() *events.Bus {

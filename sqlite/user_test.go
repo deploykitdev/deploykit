@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 	"golang.org/x/crypto/bcrypt"
 )
 

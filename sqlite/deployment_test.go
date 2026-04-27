@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // MustCreateDeployment is a test helper that creates a deployment or fails the test.

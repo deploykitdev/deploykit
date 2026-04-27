@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // SettingsStore is the persistence boundary the system service needs.

@@ -5,7 +5,7 @@ import (
 	"maps"
 	"net/http"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) {

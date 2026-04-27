@@ -13,7 +13,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 	"gopkg.in/yaml.v3"
 )
 

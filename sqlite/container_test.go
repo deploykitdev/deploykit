@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 func TestContainerService_CreateContainer(t *testing.T) {

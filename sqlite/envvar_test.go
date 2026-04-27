@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // MustCreateEnvVar is a test helper that creates an env var or fails the test.

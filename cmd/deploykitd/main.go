@@ -10,13 +10,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/heyjorgedev/deploykit/docker"
-	"github.com/heyjorgedev/deploykit/events"
-	dkhttp "github.com/heyjorgedev/deploykit/http"
-	"github.com/heyjorgedev/deploykit/presets"
-	"github.com/heyjorgedev/deploykit/reconciler"
-	"github.com/heyjorgedev/deploykit/sqlite"
-	"github.com/heyjorgedev/deploykit/sysinfo"
+	"github.com/deploykitdev/deploykit/docker"
+	"github.com/deploykitdev/deploykit/events"
+	dkhttp "github.com/deploykitdev/deploykit/http"
+	"github.com/deploykitdev/deploykit/presets"
+	"github.com/deploykitdev/deploykit/reconciler"
+	"github.com/deploykitdev/deploykit/sqlite"
+	"github.com/deploykitdev/deploykit/sysinfo"
 )
 
 // Build metadata, populated by goreleaser via -ldflags. Defaults are used

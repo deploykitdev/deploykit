@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // MustCreateService is a test helper that creates a service or fails the test.

@@ -20,7 +20,7 @@ Dependencies flow inward: implementation packages (`http`, `sqlite`, `docker`, `
 ## Tech Stack
 
 - **Language:** Go 1.25+
-- **Module:** `github.com/heyjorgedev/deploykit`
+- **Module:** `github.com/deploykitdev/deploykit`
 - **Database:** SQLite (embedded, single-file)
 - **Container runtime:** Docker (via Docker SDK for Go)
 - **Frontend:** React Router v7 + Vite + TypeScript (SPA embedded into Go binary via `go:embed`)

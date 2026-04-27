@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/http"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // Triggerable is implemented by components that support on-demand triggering.

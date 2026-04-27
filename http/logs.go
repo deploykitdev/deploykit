@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 const (

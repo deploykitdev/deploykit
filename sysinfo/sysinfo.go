@@ -24,8 +24,8 @@ import (
 	"github.com/shirou/gopsutil/v4/load"
 	"github.com/shirou/gopsutil/v4/mem"
 
-	"github.com/heyjorgedev/deploykit"
-	"github.com/heyjorgedev/deploykit/docker"
+	"github.com/deploykitdev/deploykit"
+	"github.com/deploykitdev/deploykit/docker"
 )
 
 // Service implements deploykit.SystemService.

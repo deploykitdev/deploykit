@@ -7,7 +7,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 // wsMessage is the envelope for all WebSocket messages.

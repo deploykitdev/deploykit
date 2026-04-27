@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/heyjorgedev/deploykit"
+	"github.com/deploykitdev/deploykit"
 )
 
 type contextKey string

@@ -1,4 +1,4 @@
-module github.com/heyjorgedev/deploykit
+module github.com/deploykitdev/deploykit
 
 go 1.25.0
 
