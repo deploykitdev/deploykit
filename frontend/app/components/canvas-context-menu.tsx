@@ -3,6 +3,7 @@ import {
   BoxesIcon,
   BoxIcon,
   DatabaseIcon,
+  GroupIcon,
   HardDriveIcon,
   StickyNoteIcon,
 } from "lucide-react";
@@ -13,6 +14,7 @@ interface CanvasContextMenuProps {
   onAddService: () => void;
   onAddDatabase: () => void;
   onAddNote: () => void;
+  onAddGroup: () => void;
 }
 
 export function CanvasContextMenu({
@@ -21,6 +23,7 @@ export function CanvasContextMenu({
   onAddService,
   onAddDatabase,
   onAddNote,
+  onAddGroup,
 }: CanvasContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -74,6 +77,16 @@ export function CanvasContextMenu({
       >
         <StickyNoteIcon className="size-4" />
         Add Note
+      </button>
+      <button
+        className="flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"
+        onClick={() => {
+          onAddGroup();
+          onClose();
+        }}
+      >
+        <GroupIcon className="size-4" />
+        Add Group
       </button>
       <button
         className="flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground"

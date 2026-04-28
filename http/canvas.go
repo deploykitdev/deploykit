@@ -372,6 +372,35 @@ func (c *canvasClient) handleNodeUpsert(ctx context.Context, payload json.RawMes
 		return
 	}
 
+	// Look up the existing node (if any) so we can detect parent_id transitions
+	// on service-typed nodes (which need a redeploy to refresh env var
+	// resolution). Missing is fine — this might be a fresh insert.
+	existing, err := c.canvasService.GetNode(ctx, c.projectID, upsert.ID)
+	if err != nil && deploykit.ErrorCode(err) != deploykit.ENOTFOUND {
+		c.logger.Error("loading canvas node for upsert", "err", err)
+		c.sendError("Failed to save node.")
+		return
+	}
+
+	// If a parent is referenced, it must exist in the same project and be a
+	// group node. Domain Validate() already rejects nested groups.
+	if upsert.ParentID != nil {
+		parent, err := c.canvasService.GetNode(ctx, c.projectID, *upsert.ParentID)
+		if err != nil {
+			if deploykit.ErrorCode(err) == deploykit.ENOTFOUND {
+				c.sendError("Parent group not found.")
+			} else {
+				c.logger.Error("loading parent node", "err", err)
+				c.sendError("Failed to save node.")
+			}
+			return
+		}
+		if parent.Type != deploykit.CanvasNodeTypeGroup {
+			c.sendError("Parent must be a group node.")
+			return
+		}
+	}
+
 	node, err := c.canvasService.UpsertNode(ctx, c.projectID, upsert)
 	if err != nil {
 		c.logger.Error("upserting canvas node", "err", err)
@@ -382,6 +411,40 @@ func (c *canvasClient) handleNodeUpsert(ctx context.Context, payload json.RawMes
 	response, _ := json.Marshal(node)
 	msg, _ := json.Marshal(wsMessage{Type: "node:upserted", Payload: response})
 	c.room.broadcastAll(msg)
+
+	// When an *applied* service node moves into or out of a group, stage a
+	// service.update pending change so the user gets a "Deploy" prompt that
+	// refreshes the deployment snapshot — the resolved env var set may have
+	// changed (group vars entered or left). Pending-added services
+	// (service_id == nil) skip this; their initial deploy will pick up the
+	// group's vars naturally.
+	if node.Type == deploykit.CanvasNodeTypeService && node.ServiceID != nil {
+		oldParent := ""
+		if existing != nil && existing.ParentID != nil {
+			oldParent = *existing.ParentID
+		}
+		newParent := ""
+		if node.ParentID != nil {
+			newParent = *node.ParentID
+		}
+		if oldParent != newParent {
+			// Atomically coalesce the reparent log so concurrent clients
+			// can't produce duplicate or partially-removed entries.
+			removed, appended, err := c.pendingChangeService.CoalesceServiceReparent(
+				ctx, c.projectID, *node.ServiceID, oldParent, newParent, &c.userID,
+			)
+			if err != nil {
+				c.logger.Error("coalescing reparent pending change", "err", err)
+				return
+			}
+			if len(removed) > 0 {
+				c.hub.broadcastPendingChangesRemoved(c.projectID, removed)
+			}
+			if appended != nil {
+				c.hub.broadcastPendingChangeAdded(c.projectID, appended)
+			}
+		}
+	}
 }
 
 func (c *canvasClient) handleNodeDelete(ctx context.Context, payload json.RawMessage) {

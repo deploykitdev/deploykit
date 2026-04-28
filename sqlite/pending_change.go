@@ -110,6 +110,147 @@ func (s *PendingChangeService) Append(ctx context.Context, projectID string, inp
 	return pc, nil
 }
 
+// CoalesceServiceReparent atomically replaces any prior staged reparent
+// entries for serviceID with at most one new entry. See the interface doc.
+func (s *PendingChangeService) CoalesceServiceReparent(
+	ctx context.Context,
+	projectID string,
+	serviceID string,
+	appliedParentIfNoPrior string,
+	newParentID string,
+	userID *string,
+) ([]string, *deploykit.PendingChange, error) {
+	tx, err := s.db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("beginning coalesce tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Find any prior staged reparent for this service. Walk in seq order so
+	// the EARLIEST entry's PreviousParentID wins (that's the truly-applied
+	// state — subsequent staged reparents build on it).
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, payload FROM pending_changes
+		 WHERE project_id = ? AND op = ? AND target_id = ?
+		 ORDER BY seq ASC`,
+		projectID, string(deploykit.PendingOpServiceUpdate), serviceID,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("listing prior reparents: %w", err)
+	}
+	var staleIDs []string
+	appliedParent := appliedParentIfNoPrior
+	first := true
+	for rows.Next() {
+		var id string
+		var payloadJSON string
+		if err := rows.Scan(&id, &payloadJSON); err != nil {
+			rows.Close()
+			return nil, nil, fmt.Errorf("scanning prior reparent: %w", err)
+		}
+		var p deploykit.ServiceUpdatePayload
+		if err := json.Unmarshal([]byte(payloadJSON), &p); err != nil {
+			continue
+		}
+		if !p.Reparented {
+			continue
+		}
+		// Defense against future callers that stage a mixed payload (e.g.
+		// rename + reparent in one entry). The coalesce only owns pure
+		// reparents — anything carrying field changes must survive untouched
+		// so its rename/icon edit isn't silently dropped. If you intentionally
+		// want both in one apply, stage them as two separate entries.
+		if p.Name != nil || p.IconURL != nil {
+			continue
+		}
+		if first {
+			appliedParent = p.PreviousParentID
+			first = false
+		}
+		staleIDs = append(staleIDs, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterating prior reparents: %w", err)
+	}
+
+	// Drop the stale entries.
+	if len(staleIDs) > 0 {
+		q, args := buildInClause(
+			`DELETE FROM pending_changes WHERE project_id = ? AND id IN `,
+			projectID, staleIDs,
+		)
+		if _, err := tx.ExecContext(ctx, q, args...); err != nil {
+			return nil, nil, fmt.Errorf("deleting stale reparents: %w", err)
+		}
+	}
+
+	// Net-zero change: service is back where it was applied. No new entry.
+	if newParentID == appliedParent {
+		if err := tx.Commit(); err != nil {
+			return nil, nil, fmt.Errorf("committing coalesce: %w", err)
+		}
+		return staleIDs, nil, nil
+	}
+
+	// Append a fresh entry capturing the truly-applied parent.
+	var nextSeq int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) + 1 FROM pending_changes WHERE project_id = ?`, projectID,
+	).Scan(&nextSeq); err != nil {
+		return nil, nil, fmt.Errorf("computing next seq: %w", err)
+	}
+
+	payload := deploykit.ServiceUpdatePayload{
+		Reparented:       true,
+		PreviousParentID: appliedParent,
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshaling reparent payload: %w", err)
+	}
+
+	pc := &deploykit.PendingChange{
+		ID:         uuid.New().String(),
+		ProjectID:  projectID,
+		Seq:        nextSeq,
+		Op:         deploykit.PendingOpServiceUpdate,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &serviceID,
+		Payload:    payloadBytes,
+		UserID:     userID,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO pending_changes (id, project_id, seq, op, target_type, target_id, target_temp_id, parent_temp_id, payload, user_id, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?)`,
+		pc.ID, pc.ProjectID, pc.Seq, string(pc.Op), string(pc.TargetType),
+		nullableString(pc.TargetID),
+		string(pc.Payload), nullableString(pc.UserID),
+		pc.CreatedAt.Format(timeFormat),
+	); err != nil {
+		return nil, nil, fmt.Errorf("inserting reparent entry: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, nil, fmt.Errorf("committing coalesce: %w", err)
+	}
+	return staleIDs, pc, nil
+}
+
+// buildInClause builds an IN-clause SQL fragment with placeholders and the
+// matching args slice. The `prefix` is everything before `(?, ?, ...)`.
+func buildInClause(prefix, projectID string, ids []string) (string, []any) {
+	placeholders := make([]string, len(ids))
+	args := make([]any, 0, len(ids)+1)
+	args = append(args, projectID)
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	return prefix + "(" + strings.Join(placeholders, ",") + ")", args
+}
+
 func (s *PendingChangeService) DiscardAll(ctx context.Context, projectID string) error {
 	tx, err := s.db.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -432,11 +573,14 @@ func (s *PendingChangeService) applyEntry(
 		}
 
 		// Capture the previous name so we can rewrite consumer env var
-		// references if the rename goes through.
+		// references if the rename goes through. If the service no longer
+		// exists — either an earlier-seq service.delete in this same apply
+		// removed it, or it was deleted out-of-band between Append and
+		// Apply — skip silently rather than failing the whole apply.
 		var prevName string
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM services WHERE id = ?`, resolvedTarget).Scan(&prevName); err != nil {
 			if err == sql.ErrNoRows {
-				return deploykit.Errorf(deploykit.ENOTFOUND, "Service not found.")
+				return nil
 			}
 			return fmt.Errorf("loading service for update: %w", err)
 		}
@@ -462,18 +606,27 @@ func (s *PendingChangeService) applyEntry(
 				args = append(args, *p.IconURL)
 			}
 		}
-		if len(sets) == 1 {
-			return nil // nothing to update
+		if len(sets) == 1 && !p.Reparented {
+			return nil // nothing to update and no refresh requested
 		}
-		args = append(args, resolvedTarget)
-		if _, err := tx.ExecContext(ctx,
-			fmt.Sprintf(`UPDATE services SET %s WHERE id = ?`, strings.Join(sets, ", ")),
-			args...,
-		); err != nil {
-			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				return deploykit.Errorf(deploykit.ECONFLICT, "A service with this name already exists in the project.")
+		if len(sets) > 1 {
+			args = append(args, resolvedTarget)
+			if _, err := tx.ExecContext(ctx,
+				fmt.Sprintf(`UPDATE services SET %s WHERE id = ?`, strings.Join(sets, ", ")),
+				args...,
+			); err != nil {
+				if strings.Contains(err.Error(), "UNIQUE constraint failed") {
+					return deploykit.Errorf(deploykit.ECONFLICT, "A service with this name already exists in the project.")
+				}
+				return fmt.Errorf("updating service: %w", err)
 			}
-			return fmt.Errorf("updating service: %w", err)
+		}
+
+		// A pure reparent has no field changes, but the resolved env var set
+		// may have changed (entered/left a group with vars), so refresh the
+		// deployment snapshot.
+		if p.Reparented {
+			affected[resolvedTarget] = true
 		}
 
 		if renamedTo != "" {
@@ -682,11 +835,34 @@ func (s *PendingChangeService) refreshDeploymentInTx(ctx context.Context, tx *sq
 }
 
 // markEnvVarAffected records which services need their deployment refreshed.
-// Project-scoped env var changes fan out to every service in the project.
+// Project-scoped env var changes fan out to every service in the project;
+// group-scoped changes fan out to every active service whose canvas node has
+// parent_id pointing at the group.
 func markEnvVarAffected(ctx context.Context, tx *sql.Tx, projectID string, scope deploykit.EnvVarScope, scopeID string, affected map[string]bool) error {
 	switch scope {
 	case deploykit.EnvVarScopeService:
 		affected[scopeID] = true
+	case deploykit.EnvVarScopeGroup:
+		rows, err := tx.QueryContext(ctx,
+			`SELECT s.id FROM services s
+			 JOIN canvas_nodes cn ON cn.service_id = s.id
+			 WHERE cn.parent_id = ? AND s.active_deployment_id IS NOT NULL`,
+			scopeID,
+		)
+		if err != nil {
+			return fmt.Errorf("listing group services: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				return fmt.Errorf("scanning service id: %w", err)
+			}
+			affected[id] = true
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterating service rows: %w", err)
+		}
 	case deploykit.EnvVarScopeProject:
 		rows, err := tx.QueryContext(ctx,
 			`SELECT id FROM services WHERE project_id = ? AND active_deployment_id IS NOT NULL`,
@@ -725,9 +901,10 @@ func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, new
 	rows, err := tx.QueryContext(ctx,
 		`SELECT id, scope, scope_id, value FROM env_vars
 		 WHERE ((scope = 'project' AND scope_id = ?)
+		        OR (scope = 'group'   AND scope_id IN (SELECT id FROM canvas_nodes WHERE project_id = ? AND type = 'group'))
 		        OR (scope = 'service' AND scope_id IN (SELECT id FROM services WHERE project_id = ?)))
 		   AND value LIKE '%${{%'`,
-		projectID, projectID,
+		projectID, projectID, projectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("scanning env vars for rename: %w", err)
@@ -765,6 +942,7 @@ func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, new
 	now := time.Now().UTC().Format(timeFormat)
 	affected := make(map[string]bool)
 	projectScoped := false
+	groupScopeIDs := make(map[string]bool)
 	for _, r := range rewrites {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE env_vars SET value = ?, updated_at = ? WHERE id = ?`,
@@ -775,6 +953,8 @@ func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, new
 		switch deploykit.EnvVarScope(r.scope) {
 		case deploykit.EnvVarScopeService:
 			affected[r.scopeID] = true
+		case deploykit.EnvVarScopeGroup:
+			groupScopeIDs[r.scopeID] = true
 		case deploykit.EnvVarScopeProject:
 			projectScoped = true
 		}
@@ -802,6 +982,28 @@ func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, new
 		}
 	}
 
+	// For each group whose vars were rewritten, fan out to its child services.
+	for groupID := range groupScopeIDs {
+		gRows, err := tx.QueryContext(ctx,
+			`SELECT s.id FROM services s
+			 JOIN canvas_nodes cn ON cn.service_id = s.id
+			 WHERE cn.parent_id = ? AND s.active_deployment_id IS NOT NULL`,
+			groupID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("listing group services: %w", err)
+		}
+		for gRows.Next() {
+			var id string
+			if err := gRows.Scan(&id); err != nil {
+				gRows.Close()
+				return nil, fmt.Errorf("scanning group service id: %w", err)
+			}
+			affected[id] = true
+		}
+		gRows.Close()
+	}
+
 	return affected, nil
 }
 
@@ -821,27 +1023,9 @@ func resolveEnvVarsInTx(ctx context.Context, tx *sql.Tx, projectID, serviceID st
 		return nil, nil, err
 	}
 
-	rows, err := tx.QueryContext(ctx,
-		`SELECT scope, key, value FROM env_vars
-		 WHERE (scope = 'project' AND scope_id = ?) OR (scope = 'service' AND scope_id = ?)
-		 ORDER BY scope ASC`,
-		projectID, serviceID,
-	)
+	merged, err := loadResolvedEnvVarMap(ctx, tx, projectID, serviceID)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolving env vars: %w", err)
-	}
-	defer rows.Close()
-
-	merged := make(map[string]string)
-	for rows.Next() {
-		var scope, key, value string
-		if err := rows.Scan(&scope, &key, &value); err != nil {
-			return nil, nil, fmt.Errorf("scanning env var: %w", err)
-		}
-		merged[key] = value
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterating env vars: %w", err)
+		return nil, nil, err
 	}
 
 	resolved, refs := resolveServiceRefsInMap(merged, projectSlug, siblings)

@@ -13,14 +13,18 @@ type EnvVarScope string
 const (
 	// EnvVarScopeProject denotes an env var shared by all services in a project.
 	EnvVarScopeProject EnvVarScope = "project"
-	// EnvVarScopeService denotes an env var that overrides project-level values
-	// for a single service.
+	// EnvVarScopeGroup denotes an env var attached to a canvas group node and
+	// inherited by every service whose canvas node sits inside that group.
+	// Sits between project and service in the resolution chain.
+	EnvVarScopeGroup EnvVarScope = "group"
+	// EnvVarScopeService denotes an env var that overrides project- and
+	// group-level values for a single service.
 	EnvVarScopeService EnvVarScope = "service"
 )
 
 // Valid reports whether the scope is a known value.
 func (s EnvVarScope) Valid() bool {
-	return s == EnvVarScopeProject || s == EnvVarScopeService
+	return s == EnvVarScopeProject || s == EnvVarScopeGroup || s == EnvVarScopeService
 }
 
 // envVarKeyPattern enforces POSIX-ish environment variable naming:

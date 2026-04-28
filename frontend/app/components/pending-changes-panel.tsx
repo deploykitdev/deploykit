@@ -24,9 +24,15 @@ import {
 
 interface PendingChangesPanelProps {
   projectId: string;
+  // Canvas group nodes (id + label) so group-scoped env var changes can be
+  // labeled "Group <name>" in the compacted view.
+  groupNodes?: { id: string; label: string }[];
+  // Map of service id → current canvas parent group id (null = top-level).
+  // Used to render the "after" side of a staged reparent.
+  serviceParents?: Map<string, string | null>;
 }
 
-export function PendingChangesPanel({ projectId }: PendingChangesPanelProps) {
+export function PendingChangesPanel({ projectId, groupNodes, serviceParents }: PendingChangesPanelProps) {
   const { data: changes } = usePendingChanges(projectId);
   const { data: project } = useProject(projectId);
   const { data: services } = useProjectServices(projectId);
@@ -40,8 +46,10 @@ export function PendingChangesPanel({ projectId }: PendingChangesPanelProps) {
       changes,
       project: project ? { id: project.id, name: project.name } : null,
       services: services ?? [],
+      groups: groupNodes,
+      serviceParents,
     });
-  }, [changes, project, services]);
+  }, [changes, project, services, groupNodes, serviceParents]);
 
   if (!changes || changes.length === 0) return null;
 

@@ -2,6 +2,7 @@ import { Link } from "react-router";
 import {
   useCreateServiceEnvVar,
   useDeleteServiceEnvVar,
+  useGroupEnvVars,
   usePendingChanges,
   useProjectEnvVars,
   useRemovePendingChange,
@@ -13,14 +14,19 @@ import { EnvVarsSection } from "./env-vars-section";
 interface ServiceVariablesTabProps {
   projectId: string;
   serviceId: string;
+  // Canvas group id this service is parented to, if any. Drives the
+  // "inherited from group" hint.
+  groupId?: string | null;
 }
 
 export function ServiceVariablesTab({
   projectId,
   serviceId,
+  groupId,
 }: ServiceVariablesTabProps) {
   const envVarsQuery = useServiceEnvVars(projectId, serviceId);
   const projectVarsQuery = useProjectEnvVars(projectId);
+  const groupVarsQuery = useGroupEnvVars(projectId, groupId ?? null);
   const pendingChangesQuery = usePendingChanges(projectId);
   const create = useCreateServiceEnvVar(projectId, serviceId);
   const update = useUpdateServiceEnvVar(projectId, serviceId);
@@ -28,6 +34,7 @@ export function ServiceVariablesTab({
   const removePending = useRemovePendingChange(projectId);
 
   const inheritedCount = projectVarsQuery.data?.length ?? 0;
+  const groupInheritedCount = groupVarsQuery.data?.length ?? 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -43,6 +50,17 @@ export function ServiceVariablesTab({
           >
             Manage →
           </Link>
+        </div>
+      )}
+      {groupInheritedCount > 0 && (
+        <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+          <span>
+            {groupInheritedCount} group variable
+            {groupInheritedCount === 1 ? "" : "s"} also apply to this service.
+          </span>
+          <span className="font-medium text-foreground">
+            Click the group on the canvas to manage.
+          </span>
         </div>
       )}
       <EnvVarsSection

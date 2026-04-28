@@ -40,6 +40,7 @@ interface CanvasNode {
   width?: number;
   height?: number;
   service_id?: string;
+  parent_id?: string;
   data: string;
 }
 
@@ -110,15 +111,94 @@ function toFlowNode(dbNode: CanvasNode): Node {
       flowType = "default";
   }
 
+  // Strip React Flow's default `.react-flow__node-group` styling (a solid
+  // border + faint fill) so the group's own dashed border can stand alone.
+  const groupStyleOverride =
+    dbNode.type === "group"
+      ? { border: "none", background: "transparent", padding: 0 }
+      : {};
+
+  const sizeStyle =
+    dbNode.width && dbNode.height
+      ? { width: dbNode.width, height: dbNode.height }
+      : {};
+
+  const style = { ...groupStyleOverride, ...sizeStyle };
+
   return {
     id: dbNode.id,
     type: flowType,
     position: { x: dbNode.position_x, y: dbNode.position_y },
     data: { label: dbNode.label, serviceId: dbNode.service_id, ...extraData },
-    ...(dbNode.width && dbNode.height
-      ? { style: { width: dbNode.width, height: dbNode.height } }
-      : {}),
+    ...(Object.keys(style).length > 0 ? { style } : {}),
+    // React Flow grouping: when parent_id is set, position is relative to the
+    // parent. We intentionally don't set extent:'parent' so users can drag a
+    // child out of the group to detach it (handled in onNodeDragStop).
+    ...(dbNode.parent_id ? { parentId: dbNode.parent_id } : {}),
   };
+}
+
+// Pluck out the callback fields ProjectFlow injects into node data so a
+// server-side echo doesn't blow them away on the next render.
+function injectedCallbacks(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (typeof data.commitNote === "function") out.commitNote = data.commitNote;
+  if (typeof data.commitGroup === "function") out.commitGroup = data.commitGroup;
+  if (typeof data.openPanel === "function") out.openPanel = data.openPanel;
+  if (typeof data.deleteGroup === "function") out.deleteGroup = data.deleteGroup;
+  if (typeof data.resizeGroup === "function") out.resizeGroup = data.resizeGroup;
+  return out;
+}
+
+// stripInjected returns data without the locally-injected callback fields,
+// so a comparison against a server payload doesn't see them.
+function stripInjected(data: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    if (typeof v === "function") continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+// Recursive value equality for the kinds of values a server payload can
+// carry: primitives, arrays, and plain objects. Reference-equal objects
+// short-circuit. Used by the node:upserted skip-replace path so future
+// data fields with nested shapes (lists, configs) don't force unnecessary
+// re-renders just because the server sent a fresh-but-equal instance.
+function deepEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  if (typeof a !== "object" || typeof b !== "object") return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  const aKeys = Object.keys(ao);
+  const bKeys = Object.keys(bo);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const k of aKeys) {
+    if (!deepEqual(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
+// React Flow requires a parent node to appear in the nodes array before any
+// of its children — otherwise the child's parentId reference can't resolve at
+// the moment React Flow walks the array. The backend already sorts this way
+// in getNodes(), but local mutations (upserts, reparents) need to re-establish
+// the invariant.
+function ensureParentsFirst(nodes: Node[]): Node[] {
+  if (!nodes.some((n) => n.parentId)) return nodes;
+  const parents = nodes.filter((n) => !n.parentId);
+  const children = nodes.filter((n) => n.parentId);
+  return [...parents, ...children];
 }
 
 function toFlowEdge(dbEdge: CanvasEdge): Edge {
@@ -182,7 +262,7 @@ export function useCanvasSync(projectId: string) {
     ws.on<{ nodes: CanvasNode[]; edges: CanvasEdge[] }>(
       "canvas:state",
       (payload) => {
-        setNodes(payload.nodes.map(toFlowNode));
+        setNodes(ensureParentsFirst(payload.nodes.map(toFlowNode)));
         setEdges(payload.edges.map(toFlowEdge));
       },
     );
@@ -192,24 +272,68 @@ export function useCanvasSync(projectId: string) {
       setNodes((prev) => {
         const idx = prev.findIndex((n) => n.id === flowNode.id);
         if (idx >= 0) {
-          const next = [...prev];
-          // Preserve React Flow's transient interaction flags so a server
-          // round-trip (e.g. a sticky-note color save) doesn't drop the
-          // user's selection / drag state mid-interaction.
           const prevNode = prev[idx];
+          // If our optimistic state already matches the server's view, skip
+          // replacing the node object entirely. Re-creating identical objects
+          // makes React Flow re-render and produces a brief visible jump on
+          // drag-stop after a reparent or auto-fit.
+          const prevStyle = (prevNode.style ?? {}) as { width?: number; height?: number };
+          const newStyle = (flowNode.style ?? {}) as { width?: number; height?: number };
+          const samePosition =
+            Math.abs(prevNode.position.x - flowNode.position.x) < 0.5 &&
+            Math.abs(prevNode.position.y - flowNode.position.y) < 0.5;
+          const sameSize =
+            (prevStyle.width ?? 0) === (newStyle.width ?? 0) &&
+            (prevStyle.height ?? 0) === (newStyle.height ?? 0);
+          const sameParent = (prevNode.parentId ?? null) === (flowNode.parentId ?? null);
+          // Diff every server-controlled data field shallowly. Injected
+          // callbacks (commitNote etc.) live on prev only and are filtered
+          // out of the comparison so they don't cause spurious mismatches.
+          const prevData = stripInjected((prevNode.data ?? {}) as Record<string, unknown>);
+          const newData = (flowNode.data ?? {}) as Record<string, unknown>;
+          const sameType = prevNode.type === flowNode.type;
+          const sameData = deepEqual(prevData, newData);
+          if (samePosition && sameSize && sameParent && sameType && sameData) {
+            return prev;
+          }
+          const next = [...prev];
+          // Preserve React Flow's transient interaction flags AND any caller-
+          // injected callbacks on data (commitNote, commitGroup, etc.).
           next[idx] = {
             ...flowNode,
+            data: { ...newData, ...injectedCallbacks(prevData) },
             selected: prevNode.selected,
             dragging: prevNode.dragging,
           };
-          return next;
+          return ensureParentsFirst(next);
         }
-        return [...prev, flowNode];
+        return ensureParentsFirst([...prev, flowNode]);
       });
     });
 
     ws.on<{ id: string }>("node:deleted", ({ id }) => {
-      setNodes((prev) => prev.filter((n) => n.id !== id));
+      // If a group is deleted, orphan its children locally — backend uses
+      // ON DELETE SET NULL on parent_id so children survive on the canvas at
+      // their last absolute position. Convert relative coords back to absolute
+      // before clearing parentId so they don't snap to (0,0).
+      setNodes((prev) => {
+        const removed = prev.find((n) => n.id === id);
+        const removedAbsX = removed?.position.x ?? 0;
+        const removedAbsY = removed?.position.y ?? 0;
+        return prev
+          .filter((n) => n.id !== id)
+          .map((n) => {
+            if (n.parentId !== id) return n;
+            const { parentId: _p, extent: _e, ...rest } = n;
+            return {
+              ...rest,
+              position: {
+                x: n.position.x + removedAbsX,
+                y: n.position.y + removedAbsY,
+              },
+            };
+          });
+      });
       setEdges((prev) =>
         prev.filter((e) => e.source !== id && e.target !== id),
       );
@@ -638,6 +762,21 @@ export function useCanvasSync(projectId: string) {
     [],
   );
 
+  const addGroup = useCallback((x: number, y: number) => {
+    const id = crypto.randomUUID();
+    wsRef.current?.send("node:upsert", {
+      id,
+      type: "group",
+      label: "",
+      position_x: x,
+      position_y: y,
+      width: 520,
+      height: 360,
+      data: "{}",
+    });
+    return id;
+  }, []);
+
   // Keep a ref to the latest nodes so commitNote can look up the current
   // position without forcing the callback (and the dynamic nodeTypes map that
   // closes over it) to re-create on every node state update.
@@ -663,6 +802,99 @@ export function useCanvasSync(projectId: string) {
     },
     [],
   );
+
+  const commitGroup = useCallback((id: string, label: string) => {
+    const node = nodesRef.current.find((n) => n.id === id);
+    if (!node) return;
+    const style = (node.style ?? {}) as { width?: number; height?: number };
+    wsRef.current?.send("node:upsert", {
+      id,
+      type: "group",
+      label,
+      position_x: node.position.x,
+      position_y: node.position.y,
+      width: style.width ?? 320,
+      height: style.height ?? 240,
+      data: "{}",
+    });
+  }, []);
+
+  // reparentNode persists a node's parent change AND optimistically updates
+  // local state so callers running on the same tick (e.g. autoFitGroup) see
+  // the new parent immediately rather than waiting for the WS echo. Pass null
+  // to detach. The caller picks the right relative position — when a node is
+  // dropped into a group, its position should be in the group's coordinate
+  // space; when detached, in absolute canvas coords.
+  const reparentNode = useCallback(
+    (
+      nodeId: string,
+      parentId: string | null,
+      relativePosition: { x: number; y: number },
+    ) => {
+      const node = nodesRef.current.find((n) => n.id === nodeId);
+      if (!node) return;
+      const style = (node.style ?? {}) as { width?: number; height?: number };
+      const data = (node.data ?? {}) as Record<string, unknown>;
+      const persistData = stripInjected(data);
+      // Strip injected callbacks before serializing back to the server.
+      // Only the four DB-recognized types can be reparented; anything else is
+      // a programming error in the caller.
+      let dbType: "service" | "note" | "group";
+      if (node.type === "service" || node.type === "note" || node.type === "group") {
+        dbType = node.type;
+      } else {
+        console.warn("reparentNode: unsupported node type", node.type, "for node", nodeId);
+        return;
+      }
+      wsRef.current?.send("node:upsert", {
+        id: nodeId,
+        type: dbType,
+        label: (data.label as string | undefined) ?? "",
+        position_x: relativePosition.x,
+        position_y: relativePosition.y,
+        ...(style.width != null && style.height != null
+          ? { width: style.width, height: style.height }
+          : {}),
+        ...(data.serviceId ? { service_id: data.serviceId as string } : {}),
+        parent_id: parentId,
+        data: JSON.stringify(persistData),
+      });
+
+      // Optimistic local update so autoFit reading nodesRef on the next tick
+      // sees the new parent assignment.
+      setNodes((prev) => {
+        const next = prev.map((n) => {
+          if (n.id !== nodeId) return n;
+          const cleaned = { ...n, position: relativePosition };
+          if (parentId) {
+            cleaned.parentId = parentId;
+          } else {
+            delete (cleaned as { parentId?: string }).parentId;
+          }
+          return cleaned;
+        });
+        return ensureParentsFirst(next);
+      });
+    },
+    [],
+  );
+
+  // resizeGroup persists a manual resize from the NodeResizer UI. Keeps the
+  // group's existing position/label and updates only width/height.
+  const resizeGroup = useCallback((id: string, width: number, height: number) => {
+    const node = nodesRef.current.find((n) => n.id === id);
+    if (!node) return;
+    wsRef.current?.send("node:upsert", {
+      id,
+      type: "group",
+      label: ((node.data ?? {}) as { label?: string }).label ?? "",
+      position_x: node.position.x,
+      position_y: node.position.y,
+      width,
+      height,
+      data: "{}",
+    });
+  }, []);
 
   const moveLocalDraft = useCallback(
     (draftId: string, x: number, y: number) => {
@@ -745,5 +977,9 @@ export function useCanvasSync(projectId: string) {
     deleteNode,
     addNote,
     commitNote,
+    addGroup,
+    commitGroup,
+    resizeGroup,
+    reparentNode,
   };
 }

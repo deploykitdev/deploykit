@@ -206,34 +206,57 @@ func (s *EnvVarService) ResolveForServiceWithRefs(ctx context.Context, serviceID
 		return nil, nil, err
 	}
 
-	// Fetch both scopes in one query. 'project' sorts before 'service'
-	// alphabetically, so ORDER BY scope ASC returns project rows first and
-	// service rows last — letting service values overwrite during the merge.
-	rows, err := s.db.db.QueryContext(ctx,
-		`SELECT scope, key, value FROM env_vars
-		 WHERE (scope = 'project' AND scope_id = ?) OR (scope = 'service' AND scope_id = ?)
-		 ORDER BY scope ASC`,
-		projectID, serviceID,
+	merged, err := loadResolvedEnvVarMap(ctx, s.db.db, projectID, serviceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	resolved, refs := resolveServiceRefsInMap(merged, projectSlug, siblings)
+	return resolved, refs, nil
+}
+
+// loadResolvedEnvVarMap fetches all env vars in scope for the given service
+// and merges them with project → group → service precedence. The CASE-based
+// ORDER BY enforces that order so the merge loop's last-write-wins produces
+// the correct final value (alphabetical ordering breaks once 'group' enters
+// the mix since g < p < s). The group scope_id is the canvas node id of the
+// *parent group* of the service's canvas node, looked up via parent_id.
+//
+// Shared between ResolveForServiceWithRefs (db read path) and the apply-time
+// resolveEnvVarsInTx (open transaction). Both go through dbExecutor so the
+// SQL stays in one place.
+func loadResolvedEnvVarMap(ctx context.Context, db dbExecutor, projectID, serviceID string) (map[string]string, error) {
+	rows, err := db.QueryContext(ctx,
+		`SELECT key, value FROM env_vars
+		 WHERE (scope = 'project' AND scope_id = ?)
+		    OR (scope = 'group'   AND scope_id = (
+		         SELECT cn.parent_id FROM canvas_nodes cn
+		         WHERE cn.service_id = ? AND cn.parent_id IS NOT NULL))
+		    OR (scope = 'service' AND scope_id = ?)
+		 ORDER BY CASE scope
+		   WHEN 'project' THEN 1
+		   WHEN 'group'   THEN 2
+		   WHEN 'service' THEN 3
+		 END`,
+		projectID, serviceID, serviceID,
 	)
 	if err != nil {
-		return nil, nil, fmt.Errorf("resolving env vars for service %s: %w", serviceID, err)
+		return nil, fmt.Errorf("resolving env vars for service %s: %w", serviceID, err)
 	}
 	defer rows.Close()
 
 	merged := make(map[string]string)
 	for rows.Next() {
-		var scope, key, value string
-		if err := rows.Scan(&scope, &key, &value); err != nil {
-			return nil, nil, fmt.Errorf("scanning env var row: %w", err)
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("scanning env var row: %w", err)
 		}
 		merged[key] = value
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterating env var rows: %w", err)
+		return nil, fmt.Errorf("iterating env var rows: %w", err)
 	}
-
-	resolved, refs := resolveServiceRefsInMap(merged, projectSlug, siblings)
-	return resolved, refs, nil
+	return merged, nil
 }
 
 // loadProjectServiceNames returns a set of all service names in a project.
@@ -289,14 +312,17 @@ type dbExecutor interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// verifyScopeExists returns ENOTFOUND if the target project or service does
-// not exist. Called before inserting a new env var.
+// verifyScopeExists returns ENOTFOUND if the target project, group, or service
+// does not exist. Called before inserting a new env var.
 func (s *EnvVarService) verifyScopeExists(ctx context.Context, scope deploykit.EnvVarScope, scopeID string) error {
 	var query, notFoundMsg string
 	switch scope {
 	case deploykit.EnvVarScopeProject:
 		query = `SELECT 1 FROM projects WHERE id = ?`
 		notFoundMsg = "Project not found."
+	case deploykit.EnvVarScopeGroup:
+		query = `SELECT 1 FROM canvas_nodes WHERE id = ? AND type = 'group'`
+		notFoundMsg = "Group not found."
 	case deploykit.EnvVarScopeService:
 		query = `SELECT 1 FROM services WHERE id = ?`
 		notFoundMsg = "Service not found."

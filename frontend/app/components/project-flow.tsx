@@ -8,6 +8,7 @@ import {
   useReactFlow,
   type Node,
   type NodeChange,
+  type XYPosition,
 } from "@xyflow/react";
 import { toast } from "sonner";
 import { Link } from "react-router";
@@ -25,7 +26,9 @@ import { AddServiceForm } from "./add-service-form";
 import { DraftingServiceGhost } from "./drafting-service-ghost";
 import { ServiceNode, type ServiceNodeData } from "./service-node";
 import { NoteNode, NOTE_DEFAULT_COLOR } from "./note-node";
+import { GroupNode } from "./group-node";
 import { ServiceDetailPanel } from "./service-detail-panel";
+import { GroupDetailPanel } from "./group-detail-panel";
 import { PendingChangesPanel } from "./pending-changes-panel";
 import { PendingServicePanel } from "./pending-service-panel";
 import { FloatingEdge } from "./floating-edge";
@@ -35,6 +38,7 @@ const nodeTypes = {
   "service-draft": AddServiceForm,
   "service-drafting": DraftingServiceGhost,
   note: NoteNode,
+  group: GroupNode,
 };
 
 const edgeTypes = {
@@ -80,6 +84,10 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     deleteNode,
     addNote,
     commitNote,
+    addGroup,
+    commitGroup,
+    resizeGroup,
+    reparentNode,
   } = useCanvasSync(projectId);
 
   const { data: servicesData } = useProjectServices(projectId);
@@ -153,6 +161,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   const [selectedPendingNodeId, setSelectedPendingNodeId] = useState<
     string | null
   >(null);
+  const [selectedGroupId, setSelectedGroupId] = useState<string | null>(null);
 
   // Close the detail panel if the selected service is no longer on the canvas
   // (e.g. it was deleted via context menu or by another user).
@@ -175,14 +184,29 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     if (!stillPresent) setSelectedPendingNodeId(null);
   }, [nodes, selectedPendingNodeId]);
 
+  useEffect(() => {
+    if (!selectedGroupId) return;
+    const stillPresent = nodes.some(
+      (n) => n.type === "group" && n.id === selectedGroupId,
+    );
+    if (!stillPresent) setSelectedGroupId(null);
+  }, [nodes, selectedGroupId]);
+
   const onNodeClick = useCallback(
     (_event: React.MouseEvent, node: Node) => {
+      if (node.type === "group") {
+        setSelectedServiceId(null);
+        setSelectedPendingNodeId(null);
+        setSelectedGroupId(node.id);
+        return;
+      }
       if (node.type !== "service") return;
       const data = node.data as ServiceNodeData | undefined;
       // Pending-deleted nodes are non-interactive — the service is on its way
       // out and editing it makes no sense. The bottom panel is the place to
       // cancel the deletion by discarding.
       if (data?.pendingDelete) return;
+      setSelectedGroupId(null);
       if (data?.serviceId) {
         setSelectedPendingNodeId(null);
         setSelectedServiceId(data.serviceId);
@@ -198,20 +222,41 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   // PANEL_RESERVED matches the panel's effective width (w-[520px] + gutters).
   // Only re-run when the selected id changes so ongoing node drags don't retrigger.
   useEffect(() => {
-    if (!selectedServiceId && !selectedPendingNodeId) return;
+    if (!selectedServiceId && !selectedPendingNodeId && !selectedGroupId) return;
     const PANEL_RESERVED = 540;
-    const target = getNodes().find((n) => {
-      if (n.type !== "service") return false;
-      if (selectedPendingNodeId) return n.id === selectedPendingNodeId;
-      return (
-        (n.data as ServiceNodeData | undefined)?.serviceId === selectedServiceId
-      );
-    });
+    const all = getNodes();
+    const byId = new Map(all.map((n) => [n.id, n]));
+    const target = (() => {
+      if (selectedGroupId) return byId.get(selectedGroupId);
+      return all.find((n) => {
+        if (n.type !== "service") return false;
+        if (selectedPendingNodeId) return n.id === selectedPendingNodeId;
+        return (
+          (n.data as ServiceNodeData | undefined)?.serviceId === selectedServiceId
+        );
+      });
+    })();
     if (!target) return;
-    const width = target.measured?.width ?? 256;
-    const height = target.measured?.height ?? 80;
-    const centerX = target.position.x + width / 2;
-    const centerY = target.position.y + height / 2;
+    // Children of a group store their position relative to the group, so walk
+    // the parent chain to get absolute canvas coords.
+    const absoluteOf = (n: Node): { x: number; y: number } => {
+      if (!n.parentId) return n.position;
+      const parent = byId.get(n.parentId);
+      if (!parent) return n.position;
+      const p = absoluteOf(parent);
+      return { x: p.x + n.position.x, y: p.y + n.position.y };
+    };
+    const abs = absoluteOf(target);
+    const width =
+      target.measured?.width ??
+      (target.style as { width?: number } | undefined)?.width ??
+      256;
+    const height =
+      target.measured?.height ??
+      (target.style as { height?: number } | undefined)?.height ??
+      80;
+    const centerX = abs.x + width / 2;
+    const centerY = abs.y + height / 2;
     const { zoom } = getViewport();
     setCenter(centerX + PANEL_RESERVED / 2 / zoom, centerY, {
       zoom,
@@ -220,6 +265,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   }, [
     selectedServiceId,
     selectedPendingNodeId,
+    selectedGroupId,
     getNodes,
     getViewport,
     setCenter,
@@ -245,6 +291,82 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
   }, []);
 
   const closeNodeMenu = useCallback(() => setNodeMenu(null), []);
+
+  // Reparent a child when its drag ends over (or no longer over) a group node.
+  // React Flow stores child positions relative to the parent, so we work in
+  // absolute coordinates for intersection tests, then convert back.
+  const handleNodeDragStop = useCallback(
+    (_event: React.MouseEvent | MouseEvent | TouchEvent, draggedNode: Node) => {
+      if (draggedNode.type === "group") {
+        // Dragging a group moves its children with it (relative coords stay
+        // the same), so no reparent. Auto-fit isn't needed either.
+        return;
+      }
+      if (draggedNode.type === "service-draft" || draggedNode.type === "service-drafting") {
+        return;
+      }
+
+      const all = getNodes();
+      const draggedById = new Map(all.map((n) => [n.id, n]));
+
+      // Compute absolute position of the dragged node.
+      const absoluteOf = (n: Node): XYPosition => {
+        if (!n.parentId) return n.position;
+        const parent = draggedById.get(n.parentId);
+        if (!parent) return n.position;
+        const parentAbs = absoluteOf(parent);
+        return { x: parentAbs.x + n.position.x, y: parentAbs.y + n.position.y };
+      };
+
+      const draggedW =
+        draggedNode.measured?.width ??
+        (draggedNode.style as { width?: number } | undefined)?.width ??
+        0;
+      const draggedH =
+        draggedNode.measured?.height ??
+        (draggedNode.style as { height?: number } | undefined)?.height ??
+        0;
+      const draggedAbs = absoluteOf(draggedNode);
+      const cx = draggedAbs.x + draggedW / 2;
+      const cy = draggedAbs.y + draggedH / 2;
+
+      // Find a group whose bounds contain the dragged node's center. With
+      // flat (non-nested) groups there's at most one match; if multiple
+      // groups overlap the result is the *last* in iteration order, which
+      // matches the order returned by getNodes() (creation time, ASC).
+      let target: Node | null = null;
+      for (const n of all) {
+        if (n.type !== "group") continue;
+        if (n.id === draggedNode.id) continue;
+        const gAbs = absoluteOf(n);
+        const gw = n.measured?.width ?? (n.style as { width?: number } | undefined)?.width ?? 0;
+        const gh = n.measured?.height ?? (n.style as { height?: number } | undefined)?.height ?? 0;
+        if (cx >= gAbs.x && cx <= gAbs.x + gw && cy >= gAbs.y && cy <= gAbs.y + gh) {
+          target = n;
+        }
+      }
+
+      const currentParentId = draggedNode.parentId ?? null;
+      const newParentId = target?.id ?? null;
+      if (currentParentId === newParentId) {
+        // No parent change — nothing to do. Group is resized manually.
+        return;
+      }
+
+      if (newParentId && target) {
+        // Joining a (new) group — convert absolute to relative to target.
+        const tAbs = absoluteOf(target);
+        reparentNode(draggedNode.id, newParentId, {
+          x: draggedAbs.x - tAbs.x,
+          y: draggedAbs.y - tAbs.y,
+        });
+      } else {
+        // Detaching — keep absolute position so the node visually stays put.
+        reparentNode(draggedNode.id, null, draggedAbs);
+      }
+    },
+    [getNodes, reparentNode],
+  );
 
   const onNodeContextMenu = useCallback(
     (event: React.MouseEvent, node: Node) => {
@@ -284,6 +406,12 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     addNote(menu.flowX - 110, menu.flowY - 110, NOTE_DEFAULT_COLOR);
   }, [menu, addNote]);
 
+  const handleAddGroup = useCallback(() => {
+    if (!menu) return;
+    // Center the 520×360 group on the click point.
+    addGroup(menu.flowX - 260, menu.flowY - 180);
+  }, [menu, addGroup]);
+
   const decoratedNodes = useMemo<Node[]>(() => {
     return nodes.map((n) => {
       if (n.type === "note") {
@@ -292,6 +420,16 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         const data = (n.data ?? {}) as Record<string, unknown>;
         if (data.commitNote === commitNote) return n;
         return { ...n, data: { ...data, commitNote } };
+      }
+      if (n.type === "group") {
+        const data = (n.data ?? {}) as Record<string, unknown>;
+        if (
+          data.commitGroup === commitGroup &&
+          data.resizeGroup === resizeGroup
+        ) {
+          return n;
+        }
+        return { ...n, data: { ...data, commitGroup, resizeGroup } };
       }
       if (n.type !== "service") return n;
       const data = n.data as ServiceNodeData | undefined;
@@ -329,7 +467,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         },
       };
     });
-  }, [nodes, servicesById, pendingOverridesByServiceId, commitNote]);
+  }, [nodes, servicesById, pendingOverridesByServiceId, commitNote, commitGroup, resizeGroup]);
 
   // Close the detail panel if the selected service gets marked for deletion.
   // Otherwise the user could edit a service they're about to drop.
@@ -341,6 +479,47 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       setSelectedServiceId(null);
     }
   }, [selectedServiceId, pendingOverridesByServiceId]);
+
+  // Inputs the side panels and the pending-changes panel need. Memoized so
+  // they don't get fresh references on every render and cascade re-renders
+  // into the children.
+  const selectedServiceParentId = useMemo<string | null>(() => {
+    if (!selectedServiceId) return null;
+    const node = nodes.find(
+      (n) =>
+        n.type === "service" &&
+        (n.data as ServiceNodeData | undefined)?.serviceId === selectedServiceId,
+    );
+    return node?.parentId ?? null;
+  }, [nodes, selectedServiceId]);
+
+  const selectedGroupLabel = useMemo<string>(() => {
+    if (!selectedGroupId) return "";
+    const node = nodes.find((n) => n.id === selectedGroupId);
+    return ((node?.data ?? {}) as { label?: string }).label ?? "";
+  }, [nodes, selectedGroupId]);
+
+  const groupNodesForPanel = useMemo(
+    () =>
+      nodes
+        .filter((n) => n.type === "group")
+        .map((n) => ({
+          id: n.id,
+          label: ((n.data ?? {}) as { label?: string }).label ?? "",
+        })),
+    [nodes],
+  );
+
+  const serviceParentsForPanel = useMemo<Map<string, string | null>>(() => {
+    const out = new Map<string, string | null>();
+    for (const n of nodes) {
+      if (n.type !== "service") continue;
+      const svcId = (n.data as ServiceNodeData | undefined)?.serviceId;
+      if (!svcId) continue;
+      out.set(svcId, n.parentId ?? null);
+    }
+    return out;
+  }, [nodes]);
 
   const composedNodes = useMemo<Node[]>(() => {
     if (remoteDrafts.size === 0 && localDrafts.size === 0) return decoratedNodes;
@@ -429,6 +608,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         defaultEdgeOptions={defaultEdgeOptions}
         connectionMode={ConnectionMode.Loose}
         onNodesChange={handleNodesChange}
+        onNodeDragStop={handleNodeDragStop}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onPaneContextMenu={onPaneContextMenu}
@@ -459,7 +639,16 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
           <ServiceDetailPanel
             projectId={projectId}
             serviceId={selectedServiceId}
+            groupId={selectedServiceParentId}
             onClose={() => setSelectedServiceId(null)}
+          />
+        ) : null}
+        {selectedGroupId ? (
+          <GroupDetailPanel
+            projectId={projectId}
+            groupId={selectedGroupId}
+            groupLabel={selectedGroupLabel}
+            onClose={() => setSelectedGroupId(null)}
           />
         ) : null}
         {selectedPendingNodeId ? (
@@ -479,6 +668,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         onAddService={handleAddService}
         onAddDatabase={handleAddDatabase}
         onAddNote={handleAddNote}
+        onAddGroup={handleAddGroup}
       />
       <AddDatabaseDialog
         open={databaseDialog !== null}
@@ -506,7 +696,11 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         onClose={closeNodeMenu}
         onDelete={handleDeleteNode}
       />
-      <PendingChangesPanel projectId={projectId} />
+      <PendingChangesPanel
+        projectId={projectId}
+        groupNodes={groupNodesForPanel}
+        serviceParents={serviceParentsForPanel}
+      />
     </div>
   );
 }

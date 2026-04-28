@@ -1,0 +1,10 @@
+id: typesense
+name: Typesense
+image: typesense/typesense:27.1
+icon_url: https://typesense.org/favicon.ico
+ports:
+  - container_port: 8108
+    protocol: tcp
+env_vars:
+  - { key: TYPESENSE_DATA_DIR, value: /data }
+  - { key: TYPESENSE_API_KEY, generate: password_24 }

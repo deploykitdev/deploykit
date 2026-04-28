@@ -787,3 +787,369 @@ func TestPendingChangeService_Apply_ServiceRenameRewritesRefs(t *testing.T) {
 	}
 }
 
+// TestPendingChangeService_CoalesceServiceReparent verifies the atomic
+// list/remove/append flow used by the canvas WS handler when a service is
+// dragged in and out of groups.
+func TestPendingChangeService_CoalesceServiceReparent(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("first reparent appends with previous applied state", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+		serviceID := "svc-1"
+
+		removed, appended, err := svc.CoalesceServiceReparent(
+			ctx, proj.ID, serviceID, "" /* applied: top-level */, "group-A", nil,
+		)
+		if err != nil {
+			t.Fatalf("coalesce: %v", err)
+		}
+		if len(removed) != 0 {
+			t.Errorf("removed: got %d, want 0", len(removed))
+		}
+		if appended == nil {
+			t.Fatal("expected appended entry")
+		}
+		var p deploykit.ServiceUpdatePayload
+		if err := json.Unmarshal(appended.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if !p.Reparented {
+			t.Error("expected Reparented=true")
+		}
+		if p.PreviousParentID != "" {
+			t.Errorf("PreviousParentID: got %q, want empty (top-level)", p.PreviousParentID)
+		}
+	})
+
+	t.Run("second reparent coalesces, preserves original applied state", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+		serviceID := "svc-1"
+
+		// First move: top-level → group-A.
+		_, first, err := svc.CoalesceServiceReparent(ctx, proj.ID, serviceID, "", "group-A", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == nil {
+			t.Fatal("expected first appended")
+		}
+
+		// Second move: group-A → group-B. The handler passes
+		// currentParentBeforeUpsert="group-A" (the canvas row's value), but
+		// CoalesceServiceReparent should ignore that and use the prior
+		// entry's PreviousParentID="" as the truly-applied state.
+		removed, second, err := svc.CoalesceServiceReparent(
+			ctx, proj.ID, serviceID, "group-A", "group-B", nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(removed) != 1 || removed[0] != first.ID {
+			t.Errorf("removed: got %v, want [%s]", removed, first.ID)
+		}
+		if second == nil {
+			t.Fatal("expected new entry after coalesce")
+		}
+		var p deploykit.ServiceUpdatePayload
+		if err := json.Unmarshal(second.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.PreviousParentID != "" {
+			t.Errorf("PreviousParentID should track original applied state (empty), got %q", p.PreviousParentID)
+		}
+
+		// Only one entry remains in the log.
+		list, err := svc.List(ctx, proj.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 1 || list[0].ID != second.ID {
+			t.Errorf("list: got %d entries, want 1 with ID %s", len(list), second.ID)
+		}
+	})
+
+	t.Run("net-zero move drops staged entry and appends nothing", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+		serviceID := "svc-1"
+
+		// Stage: top-level → group-A.
+		_, first, err := svc.CoalesceServiceReparent(ctx, proj.ID, serviceID, "", "group-A", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Move back to top-level. PreviousParentID was "" so this is a no-op.
+		removed, appended, err := svc.CoalesceServiceReparent(
+			ctx, proj.ID, serviceID, "group-A", "", nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(removed) != 1 || removed[0] != first.ID {
+			t.Errorf("removed: got %v, want [%s]", removed, first.ID)
+		}
+		if appended != nil {
+			t.Errorf("expected no appended entry on net-zero, got %s", appended.ID)
+		}
+
+		list, err := svc.List(ctx, proj.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 0 {
+			t.Errorf("list: got %d entries, want 0 after net-zero", len(list))
+		}
+	})
+
+	t.Run("only reparent entries are coalesced (rename entry untouched)", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+		serviceID := "svc-1"
+
+		renamePayload, _ := json.Marshal(deploykit.ServiceUpdatePayload{Name: strPtr("new-name")})
+		rename, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+			Op:         deploykit.PendingOpServiceUpdate,
+			TargetType: deploykit.PendingTargetService,
+			TargetID:   &serviceID,
+			Payload:    renamePayload,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		removed, appended, err := svc.CoalesceServiceReparent(
+			ctx, proj.ID, serviceID, "", "group-A", nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(removed) != 0 {
+			t.Errorf("removed: got %d, want 0 (rename should not be touched)", len(removed))
+		}
+		if appended == nil {
+			t.Fatal("expected appended reparent entry")
+		}
+
+		list, err := svc.List(ctx, proj.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 2 {
+			t.Errorf("list: got %d, want 2 (rename + reparent)", len(list))
+		}
+		// Rename entry must still be there.
+		seen := false
+		for _, e := range list {
+			if e.ID == rename.ID {
+				seen = true
+				break
+			}
+		}
+		if !seen {
+			t.Error("rename entry was incorrectly removed")
+		}
+	})
+
+	t.Run("mixed payload (name + reparented) is not coalesced", func(t *testing.T) {
+		// Forward-looking guard: today's HTTP layer always stages pure
+		// reparent or pure rename entries, but ServiceUpdatePayload permits
+		// both flags on the same row. If a future caller stages a mixed
+		// entry, CoalesceServiceReparent must NOT delete it — that would
+		// silently drop the rename.
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+		serviceID := "svc-1"
+
+		mixedPayload, _ := json.Marshal(deploykit.ServiceUpdatePayload{
+			Name:             strPtr("renamed-and-moved"),
+			Reparented:       true,
+			PreviousParentID: "group-A",
+		})
+		mixed, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+			Op:         deploykit.PendingOpServiceUpdate,
+			TargetType: deploykit.PendingTargetService,
+			TargetID:   &serviceID,
+			Payload:    mixedPayload,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Now stage a pure reparent for the same service.
+		removed, appended, err := svc.CoalesceServiceReparent(
+			ctx, proj.ID, serviceID, "group-A", "group-B", nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(removed) != 0 {
+			t.Errorf("removed: got %d, want 0 (mixed payload must survive)", len(removed))
+		}
+		if appended == nil {
+			t.Fatal("expected appended pure-reparent entry")
+		}
+
+		// Mixed entry's PreviousParentID was "group-A", so the new pure
+		// reparent should ALSO use the canvas-derived applied state ("group-A")
+		// since the mixed entry was skipped during the "find prior" walk.
+		var p deploykit.ServiceUpdatePayload
+		if err := json.Unmarshal(appended.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		if p.PreviousParentID != "group-A" {
+			t.Errorf("PreviousParentID: got %q, want %q", p.PreviousParentID, "group-A")
+		}
+
+		list, err := svc.List(ctx, proj.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(list) != 2 {
+			t.Errorf("list: got %d, want 2 (mixed + new pure reparent)", len(list))
+		}
+		// Mixed entry must still be there.
+		seenMixed := false
+		for _, e := range list {
+			if e.ID == mixed.ID {
+				seenMixed = true
+				break
+			}
+		}
+		if !seenMixed {
+			t.Error("mixed entry was incorrectly removed")
+		}
+	})
+}
+
+// TestPendingChangeService_Apply_ServiceUpdate_AfterDelete verifies that a
+// service.update entry whose target was already deleted by an earlier-seq
+// service.delete in the same apply is skipped silently — instead of failing
+// the entire apply with ENOTFOUND.
+func TestPendingChangeService_Apply_ServiceUpdate_AfterDelete(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	depSvc := sqlite.NewDeploymentService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+	web, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "web"})
+	if _, err := depSvc.CreateDeployment(ctx, web.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seq 1: delete the service.
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceDelete,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &web.ID,
+		Payload:    json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seq 2: stage a reparent on the same (now soon-to-be-deleted) service.
+	reparentPayload, _ := json.Marshal(deploykit.ServiceUpdatePayload{
+		Reparented:       true,
+		PreviousParentID: "",
+	})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceUpdate,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &web.ID,
+		Payload:    reparentPayload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Apply should not error — the reparent is skipped because the service
+	// is already gone.
+	res, err := svc.Apply(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("apply should not fail when reparent target was deleted earlier in the log: %v", err)
+	}
+	if res.AppliedCount != 2 {
+		t.Errorf("applied count: got %d, want 2", res.AppliedCount)
+	}
+}
+
+// TestPendingChangeService_Apply_PureReparent verifies that applying a
+// service.update with Reparented=true (and no field changes) refreshes the
+// service's deployment snapshot, picking up env vars from the new parent group.
+func TestPendingChangeService_Apply_PureReparent(t *testing.T) {
+	ctx := context.Background()
+	db := sqlite.MustOpenDB(t)
+	svc := sqlite.NewPendingChangeService(db)
+	svcSvc := sqlite.NewServiceService(db)
+	envSvc := sqlite.NewEnvVarService(db)
+	depSvc := sqlite.NewDeploymentService(db)
+	canvasSvc := sqlite.NewCanvasService(db)
+	proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+	// Service with an active deployment (so it's eligible for refresh).
+	web, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "web"})
+	if _, err := depSvc.CreateDeployment(ctx, web.ID, deploykit.DeploymentCreate{Image: "nginx:1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Group canvas node + service canvas node parented to it.
+	groupNode, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID: "node-group", Type: deploykit.CanvasNodeTypeGroup, Label: "app",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := canvasSvc.UpsertNode(ctx, proj.ID, deploykit.CanvasNodeUpsert{
+		ID: "node-web", Type: deploykit.CanvasNodeTypeService, Label: "web",
+		ServiceID: &web.ID, ParentID: &groupNode.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Group has an env var that the service should inherit on refresh.
+	if _, err := envSvc.CreateEnvVar(ctx, deploykit.EnvVarScopeGroup, groupNode.ID, deploykit.EnvVarCreate{
+		Key: "SHARED", Value: "abc",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage a pure reparent (no name/icon change, just Reparented=true).
+	payload, _ := json.Marshal(deploykit.ServiceUpdatePayload{
+		Reparented:       true,
+		PreviousParentID: "",
+	})
+	if _, err := svc.Append(ctx, proj.ID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpServiceUpdate,
+		TargetType: deploykit.PendingTargetService,
+		TargetID:   &web.ID,
+		Payload:    payload,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := svc.Apply(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if res.AppliedCount != 1 {
+		t.Errorf("applied count: got %d, want 1", res.AppliedCount)
+	}
+	if len(res.RedeployedServiceIDs) != 1 || res.RedeployedServiceIDs[0] != web.ID {
+		t.Errorf("redeployed: got %v, want [%s]", res.RedeployedServiceIDs, web.ID)
+	}
+	if len(res.CreatedDeployments) != 1 {
+		t.Fatalf("created deployments: got %d, want 1", len(res.CreatedDeployments))
+	}
+	if got := res.CreatedDeployments[0].EnvVars["SHARED"]; got != "abc" {
+		t.Errorf("inherited group var SHARED: got %q, want %q", got, "abc")
+	}
+}
+

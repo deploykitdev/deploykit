@@ -148,7 +148,7 @@ export interface SystemStatus {
   };
 }
 
-export type EnvVarScope = "project" | "service";
+export type EnvVarScope = "project" | "group" | "service";
 
 export interface EnvVar {
   id: string;
@@ -222,6 +222,8 @@ export const queryKeys = {
     ["projects", projectId, "env-vars"] as const,
   serviceEnvVars: (projectId: string, serviceId: string) =>
     ["projects", projectId, "services", serviceId, "env-vars"] as const,
+  groupEnvVars: (projectId: string, groupId: string) =>
+    ["projects", projectId, "groups", groupId, "env-vars"] as const,
   pendingChanges: (projectId: string) =>
     ["projects", projectId, "pending-changes"] as const,
   users: ["users"] as const,
@@ -605,6 +607,67 @@ export function useDeleteServiceEnvVar(projectId: string, serviceId: string) {
     mutationFn: (id: string) =>
       api<PendingChange>(
         `/projects/${projectId}/services/${serviceId}/env-vars/${id}`,
+        {
+          method: "DELETE",
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+export function useGroupEnvVars(projectId: string, groupId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.groupEnvVars(projectId, groupId ?? ""),
+    queryFn: () =>
+      api<{ data: EnvVar[] }>(
+        `/projects/${projectId}/groups/${groupId}/env-vars`,
+      ).then((r) => r.data ?? []),
+    enabled: !!groupId,
+  });
+}
+
+export function useCreateGroupEnvVar(projectId: string, groupId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { key: string; value: string }) =>
+      api<PendingChange>(
+        `/projects/${projectId}/groups/${groupId}/env-vars`,
+        {
+          method: "POST",
+          body: JSON.stringify(data),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+export function useUpdateGroupEnvVar(projectId: string, groupId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, value }: { id: string; value: string }) =>
+      api<PendingChange>(
+        `/projects/${projectId}/groups/${groupId}/env-vars/${id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ value }),
+        },
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.pendingChanges(projectId) });
+    },
+  });
+}
+
+export function useDeleteGroupEnvVar(projectId: string, groupId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api<PendingChange>(
+        `/projects/${projectId}/groups/${groupId}/env-vars/${id}`,
         {
           method: "DELETE",
         },

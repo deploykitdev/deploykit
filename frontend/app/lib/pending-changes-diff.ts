@@ -7,7 +7,7 @@ export interface CompactedChange {
   // Stable key for React list rendering.
   key: string;
   targetLabel: string;
-  targetKind: "project" | "service" | "env_var";
+  targetKind: "project" | "service" | "group" | "env_var";
   // For services being created this apply — the draft name. Used to show a
   // creating-service block even before deploy.
   pendingCreate?: boolean;
@@ -29,6 +29,12 @@ export interface CompactInput {
   changes: PendingChange[];
   project: { id: string; name: string } | null | undefined;
   services: Service[];
+  // Canvas group nodes (id + label) so the panel can render "Group <label>"
+  // for group-scoped env var changes and reparent entries.
+  groups?: { id: string; label: string }[];
+  // Map of service id → current canvas parent group id (or null for top-level).
+  // Used to render the "after" side of a staged reparent.
+  serviceParents?: Map<string, string | null>;
 }
 
 type ParsedPayload = Record<string, unknown>;
@@ -114,8 +120,16 @@ export function collectServiceOverride(
 // compactChanges produces a per-target summary of the log, collapsing
 // redundant or cancelling entries.
 export function compactChanges(input: CompactInput): CompactedChange[] {
-  const { changes, project, services } = input;
+  const { changes, project, services, groups: groupNodes, serviceParents } = input;
   if (changes.length === 0) return [];
+
+  const groupLabel = (id: string): string => {
+    const g = groupNodes?.find((g) => g.id === id);
+    if (g && g.label) return `Group "${g.label}"`;
+    return "Group";
+  };
+  const groupOrTopLevel = (id: string): string =>
+    id ? groupLabel(id) : "(top-level)";
 
   // Group by (targetKind, resolvedKey). Use the real target id when we have
   // it, else the temp id or parent temp id.
@@ -219,6 +233,29 @@ export function compactChanges(input: CompactInput): CompactedChange[] {
             else g.fields.push({ label: "Icon", before, after });
           }
         }
+        if (payload.reparented === true) {
+          const prev = typeof payload.previous_parent_id === "string"
+            ? payload.previous_parent_id
+            : "";
+          const beforeLabel = groupOrTopLevel(prev);
+          // The new parent isn't on the payload — read it from the live
+          // canvas, which already reflects the staged move. If the consumer
+          // didn't provide serviceParents, fall back to a "(moved)" hint.
+          const currentParent = serviceParents?.get(c.target_id) ?? null;
+          const afterLabel =
+            serviceParents != null
+              ? currentParent
+                ? groupLabel(currentParent)
+                : "(top-level)"
+              : "(moved)";
+          const existing = g.fields.find((f) => f.label === "Group");
+          if (existing) {
+            existing.before = beforeLabel;
+            existing.after = afterLabel;
+          } else {
+            g.fields.push({ label: "Group", before: beforeLabel, after: afterLabel });
+          }
+        }
         break;
       }
 
@@ -253,6 +290,13 @@ export function compactChanges(input: CompactInput): CompactedChange[] {
             "project",
           );
           mergeEnvVarAdd(g, key, value);
+        } else if (payload.scope === "group" && c.target_id) {
+          const g = getGroup(
+            `group:${c.target_id}`,
+            groupLabel(c.target_id),
+            "group",
+          );
+          mergeEnvVarAdd(g, key, value);
         } else if (payload.scope === "service" && c.target_id) {
           const svc = services.find((s) => s.id === c.target_id);
           const label = svc ? `Service "${svc.name}"` : "Service";
@@ -277,6 +321,9 @@ export function compactChanges(input: CompactInput): CompactedChange[] {
             "project",
           );
           mergeEnvVarEdit(g, key, oldValue, newValue);
+        } else if (scope === "group") {
+          const g = getGroup(`group:${scopeID}`, groupLabel(scopeID), "group");
+          mergeEnvVarEdit(g, key, oldValue, newValue);
         } else if (scope === "service") {
           const svc = services.find((s) => s.id === scopeID);
           const label = svc ? `Service "${svc.name}"` : "Service";
@@ -299,6 +346,9 @@ export function compactChanges(input: CompactInput): CompactedChange[] {
             project ? `Project "${project.name}"` : "Project",
             "project",
           );
+          mergeEnvVarRemove(g, key, oldValue);
+        } else if (scope === "group") {
+          const g = getGroup(`group:${scopeID}`, groupLabel(scopeID), "group");
           mergeEnvVarRemove(g, key, oldValue);
         } else if (scope === "service") {
           const svc = services.find((s) => s.id === scopeID);

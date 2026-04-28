@@ -97,6 +97,30 @@ type PendingChangeService interface {
 	// the ID doesn't exist under the given project.
 	RemoveByID(ctx context.Context, projectID string, changeID string) error
 
+	// CoalesceServiceReparent atomically replaces any prior staged reparent
+	// entries for `serviceID` with at most one new entry that records the move
+	// from the truly-applied parent to `newParentID`. If the resulting net
+	// change is zero (service is back where it was last deployed), no new
+	// entry is created.
+	//
+	// `appliedParentIfNoPrior` is the value the function should treat as the
+	// applied state ONLY when no prior staged reparent exists. If a prior
+	// entry is found, its PreviousParentID wins instead (it captured the
+	// truly-applied state at the moment it was staged). Callers typically
+	// pass the canvas_nodes row's parent_id from before this upsert.
+	//
+	// Returns the IDs of any prior entries that were dropped and the newly
+	// appended entry (nil if net-zero). The whole operation runs in one
+	// transaction so concurrent callers can't produce duplicate entries.
+	CoalesceServiceReparent(
+		ctx context.Context,
+		projectID string,
+		serviceID string,
+		appliedParentIfNoPrior string,
+		newParentID string,
+		userID *string,
+	) (removedIDs []string, appended *PendingChange, err error)
+
 	// Apply walks the project's pending changes in sequence order, mutates
 	// real state inside a single transaction, clears the log on success, and
 	// returns a summary. On any error the transaction is rolled back and the
@@ -125,6 +149,18 @@ type ServiceCreatePayload struct {
 type ServiceUpdatePayload struct {
 	Name    *string `json:"name,omitempty"`
 	IconURL *string `json:"icon_url,omitempty"`
+	// Reparented marks an update that didn't change any fields on the service
+	// itself but moved its canvas node into or out of a group. The apply path
+	// uses this to refresh the deployment snapshot so the service picks up
+	// (or drops) the new group's env vars.
+	Reparented bool `json:"reparented,omitempty"`
+	// PreviousParentID captures the canvas node's parent_id at the moment the
+	// FIRST reparent was staged (i.e. the applied state). Used to coalesce
+	// repeated drag-in/drag-out cycles into a single pending entry — and to
+	// drop the entry entirely when the user moves the service back to where
+	// it started. Empty string means "no parent" (top-level). Only meaningful
+	// when Reparented is true.
+	PreviousParentID string `json:"previous_parent_id,omitempty"`
 }
 
 // EnvVarCreatePayload is the payload for a PendingOpEnvVarCreate entry.

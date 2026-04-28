@@ -38,9 +38,12 @@ func (s *CanvasService) GetCanvasState(ctx context.Context, projectID string) ([
 }
 
 func (s *CanvasService) getNodes(ctx context.Context, projectID string) ([]*deploykit.CanvasNode, error) {
+	// ORDER BY parents first so React Flow receives them before any child node
+	// that references them via parentId — required for grouped nodes to render.
 	rows, err := s.db.db.QueryContext(ctx,
-		`SELECT id, project_id, type, label, position_x, position_y, width, height, service_id, data, created_at, updated_at
-		 FROM canvas_nodes WHERE project_id = ? ORDER BY created_at ASC`, projectID,
+		`SELECT id, project_id, type, label, position_x, position_y, width, height, service_id, parent_id, data, created_at, updated_at
+		 FROM canvas_nodes WHERE project_id = ?
+		 ORDER BY (parent_id IS NOT NULL), created_at ASC`, projectID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("listing canvas nodes: %w", err)
@@ -52,12 +55,12 @@ func (s *CanvasService) getNodes(ctx context.Context, projectID string) ([]*depl
 		n := &deploykit.CanvasNode{}
 		var createdAt, updatedAt string
 		var width, height sql.NullFloat64
-		var serviceID sql.NullString
+		var serviceID, parentID sql.NullString
 
 		if err := rows.Scan(
 			&n.ID, &n.ProjectID, &n.Type, &n.Label,
 			&n.PositionX, &n.PositionY, &width, &height,
-			&serviceID, &n.Data, &createdAt, &updatedAt,
+			&serviceID, &parentID, &n.Data, &createdAt, &updatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scanning canvas node row: %w", err)
 		}
@@ -70,6 +73,9 @@ func (s *CanvasService) getNodes(ctx context.Context, projectID string) ([]*depl
 		}
 		if serviceID.Valid {
 			n.ServiceID = &serviceID.String
+		}
+		if parentID.Valid {
+			n.ParentID = &parentID.String
 		}
 
 		n.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -121,6 +127,43 @@ func (s *CanvasService) getEdges(ctx context.Context, projectID string) ([]*depl
 	return edges, nil
 }
 
+func (s *CanvasService) GetNode(ctx context.Context, projectID, nodeID string) (*deploykit.CanvasNode, error) {
+	row := s.db.db.QueryRowContext(ctx,
+		`SELECT id, project_id, type, label, position_x, position_y, width, height, service_id, parent_id, data, created_at, updated_at
+		 FROM canvas_nodes WHERE project_id = ? AND id = ?`, projectID, nodeID,
+	)
+	n := &deploykit.CanvasNode{}
+	var createdAt, updatedAt string
+	var width, height sql.NullFloat64
+	var serviceID, parentID sql.NullString
+
+	if err := row.Scan(
+		&n.ID, &n.ProjectID, &n.Type, &n.Label,
+		&n.PositionX, &n.PositionY, &width, &height,
+		&serviceID, &parentID, &n.Data, &createdAt, &updatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Canvas node not found.")
+		}
+		return nil, fmt.Errorf("loading canvas node %s: %w", nodeID, err)
+	}
+	if width.Valid {
+		n.Width = &width.Float64
+	}
+	if height.Valid {
+		n.Height = &height.Float64
+	}
+	if serviceID.Valid {
+		n.ServiceID = &serviceID.String
+	}
+	if parentID.Valid {
+		n.ParentID = &parentID.String
+	}
+	n.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	n.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	return n, nil
+}
+
 func (s *CanvasService) UpsertNode(ctx context.Context, projectID string, node deploykit.CanvasNodeUpsert) (*deploykit.CanvasNode, error) {
 	if err := node.Validate(); err != nil {
 		return nil, err
@@ -137,12 +180,13 @@ func (s *CanvasService) UpsertNode(ctx context.Context, projectID string, node d
 		Width:     node.Width,
 		Height:    node.Height,
 		ServiceID: node.ServiceID,
+		ParentID:  node.ParentID,
 		Data:      node.Data,
 		UpdatedAt: now,
 	}
 
 	var width, height sql.NullFloat64
-	var serviceID sql.NullString
+	var serviceID, parentID sql.NullString
 
 	if node.Width != nil {
 		width = sql.NullFloat64{Float64: *node.Width, Valid: true}
@@ -153,6 +197,9 @@ func (s *CanvasService) UpsertNode(ctx context.Context, projectID string, node d
 	if node.ServiceID != nil {
 		serviceID = sql.NullString{String: *node.ServiceID, Valid: true}
 	}
+	if node.ParentID != nil {
+		parentID = sql.NullString{String: *node.ParentID, Valid: true}
+	}
 
 	data := node.Data
 	if data == "" {
@@ -161,8 +208,8 @@ func (s *CanvasService) UpsertNode(ctx context.Context, projectID string, node d
 
 	var createdAt string
 	err := s.db.db.QueryRowContext(ctx,
-		`INSERT INTO canvas_nodes (id, project_id, type, label, position_x, position_y, width, height, service_id, data, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO canvas_nodes (id, project_id, type, label, position_x, position_y, width, height, service_id, parent_id, data, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 		   type = excluded.type,
 		   label = excluded.label,
@@ -171,12 +218,13 @@ func (s *CanvasService) UpsertNode(ctx context.Context, projectID string, node d
 		   width = excluded.width,
 		   height = excluded.height,
 		   service_id = excluded.service_id,
+		   parent_id = excluded.parent_id,
 		   data = excluded.data,
 		   updated_at = excluded.updated_at
 		 RETURNING created_at`,
 		result.ID, projectID, result.Type, result.Label,
 		result.PositionX, result.PositionY, width, height,
-		serviceID, data,
+		serviceID, parentID, data,
 		now.Format(timeFormat), now.Format(timeFormat),
 	).Scan(&createdAt)
 	if err != nil {

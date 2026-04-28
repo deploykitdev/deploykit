@@ -33,6 +33,7 @@ type CanvasNode struct {
 	Width     *float64  `json:"width,omitempty"`
 	Height    *float64  `json:"height,omitempty"`
 	ServiceID *string   `json:"service_id,omitempty"`
+	ParentID  *string   `json:"parent_id,omitempty"`
 	Data      string    `json:"data"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -54,6 +55,10 @@ type CanvasEdge struct {
 type CanvasService interface {
 	// GetCanvasState returns all nodes and edges for a project.
 	GetCanvasState(ctx context.Context, projectID string) ([]*CanvasNode, []*CanvasEdge, error)
+
+	// GetNode returns a single canvas node. Returns ENOTFOUND if no node with
+	// that id exists in the project.
+	GetNode(ctx context.Context, projectID string, nodeID string) (*CanvasNode, error)
 
 	// UpsertNode creates or updates a canvas node.
 	UpsertNode(ctx context.Context, projectID string, node CanvasNodeUpsert) (*CanvasNode, error)
@@ -83,10 +88,17 @@ type CanvasNodeUpsert struct {
 	Width     *float64 `json:"width,omitempty"`
 	Height    *float64 `json:"height,omitempty"`
 	ServiceID *string  `json:"service_id,omitempty"`
+	ParentID  *string  `json:"parent_id,omitempty"`
 	Data      string   `json:"data"`
 }
 
 // Validate checks that all required fields are present.
+//
+// Note: this is a pure-field validator. The cross-row rule "ParentID must
+// reference an existing canvas node of type 'group' in the same project" is
+// enforced one layer up in http/canvas.go's handleNodeUpsert, since it
+// requires a DB lookup. Any future caller into sqlite.UpsertNode must
+// perform that check itself or call through the HTTP layer.
 func (c *CanvasNodeUpsert) Validate() error {
 	ve := NewValidationErrors()
 	if c.ID == "" {
@@ -94,6 +106,12 @@ func (c *CanvasNodeUpsert) Validate() error {
 	}
 	if c.Type == "" {
 		ve.Add("type", "Type is required.")
+	}
+	if c.Type == CanvasNodeTypeGroup && c.ParentID != nil {
+		ve.Add("parent_id", "Group nodes cannot be nested inside another group.")
+	}
+	if c.ParentID != nil && *c.ParentID == c.ID {
+		ve.Add("parent_id", "A node cannot be its own parent.")
 	}
 	return ve.Err()
 }

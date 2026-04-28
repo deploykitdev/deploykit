@@ -345,6 +345,184 @@ func (s *Server) handleDeleteServiceEnvVar(w http.ResponseWriter, r *http.Reques
 	jsonResponse(w, http.StatusOK, pc)
 }
 
+// --- Group-scoped handlers ---
+//
+// A "group" here is a canvas node with type='group'. Group env vars sit
+// between project and service in the resolution chain — services whose
+// canvas node has parent_id pointing at the group inherit the values.
+
+func (s *Server) handleCreateGroupEnvVar(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	groupID := r.PathValue("groupId")
+
+	if err := s.verifyGroupInProject(r.Context(), projectID, groupID); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	var req deploykit.EnvVarCreate
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
+		return
+	}
+	if err := req.Validate(); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+	if err := s.checkEnvVarKeyFree(r.Context(), projectID, deploykit.EnvVarScopeGroup, groupID, req.Key); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	payload, err := json.Marshal(deploykit.EnvVarCreatePayload{
+		Scope: deploykit.EnvVarScopeGroup,
+		Key:   req.Key,
+		Value: req.Value,
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarCreate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &groupID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusCreated, pc)
+}
+
+func (s *Server) handleListGroupEnvVars(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	groupID := r.PathValue("groupId")
+
+	if err := s.verifyGroupInProject(r.Context(), projectID, groupID); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	envVars, err := s.EnvVarService.ListEnvVars(r.Context(), deploykit.EnvVarScopeGroup, groupID)
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]any{"data": envVars})
+}
+
+func (s *Server) handleUpdateGroupEnvVar(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	groupID := r.PathValue("groupId")
+	envVarID := r.PathValue("envVarId")
+
+	if err := s.verifyGroupInProject(r.Context(), projectID, groupID); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	existing, err := s.EnvVarService.GetEnvVar(r.Context(), envVarID)
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+	if existing.Scope != deploykit.EnvVarScopeGroup || existing.ScopeID != groupID {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.ENOTFOUND, "Env var not found."))
+		return
+	}
+
+	var req deploykit.EnvVarUpdate
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "Invalid JSON body."))
+		return
+	}
+	if req.Value == nil {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.EINVALID, "value is required."))
+		return
+	}
+
+	payload, err := json.Marshal(deploykit.EnvVarUpdatePayload{
+		Value:    *req.Value,
+		OldValue: existing.Value,
+		Scope:    existing.Scope,
+		ScopeID:  existing.ScopeID,
+		Key:      existing.Key,
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarUpdate,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &envVarID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
+}
+
+func (s *Server) handleDeleteGroupEnvVar(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("projectId")
+	groupID := r.PathValue("groupId")
+	envVarID := r.PathValue("envVarId")
+
+	if err := s.verifyGroupInProject(r.Context(), projectID, groupID); err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	existing, err := s.EnvVarService.GetEnvVar(r.Context(), envVarID)
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+	if existing.Scope != deploykit.EnvVarScopeGroup || existing.ScopeID != groupID {
+		s.errorResponse(w, r, deploykit.Errorf(deploykit.ENOTFOUND, "Env var not found."))
+		return
+	}
+
+	payload, err := json.Marshal(deploykit.EnvVarDeletePayload{
+		Scope:    existing.Scope,
+		ScopeID:  existing.ScopeID,
+		Key:      existing.Key,
+		OldValue: existing.Value,
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	pc, err := s.PendingChangeService.Append(r.Context(), projectID, deploykit.PendingChangeInput{
+		Op:         deploykit.PendingOpEnvVarDelete,
+		TargetType: deploykit.PendingTargetEnvVar,
+		TargetID:   &envVarID,
+		Payload:    payload,
+		UserID:     currentUserID(r.Context()),
+	})
+	if err != nil {
+		s.errorResponse(w, r, err)
+		return
+	}
+
+	s.canvasHub.broadcastPendingChangeAdded(projectID, pc)
+	jsonResponse(w, http.StatusOK, pc)
+}
+
 // --- Helpers ---
 
 // checkEnvVarKeyFree returns ECONFLICT if an env var with the given key
@@ -434,6 +612,21 @@ func (s *Server) verifyServiceInProject(ctx context.Context, projectID, serviceI
 		return deploykit.Errorf(deploykit.ENOTFOUND, "Service not found.")
 	}
 	return nil
+}
+
+// verifyGroupInProject returns ENOTFOUND if the canvas node doesn't exist,
+// isn't a group, or doesn't belong to the given project.
+func (s *Server) verifyGroupInProject(ctx context.Context, projectID, groupID string) error {
+	nodes, _, err := s.CanvasService.GetCanvasState(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	for _, n := range nodes {
+		if n.ID == groupID && n.Type == deploykit.CanvasNodeTypeGroup {
+			return nil
+		}
+	}
+	return deploykit.Errorf(deploykit.ENOTFOUND, "Group not found.")
 }
 
 // currentUserID returns the authenticated user's ID (or nil if unauthenticated).

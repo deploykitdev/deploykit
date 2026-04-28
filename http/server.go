@@ -158,6 +158,11 @@ func (s *Server) registerRoutes() {
 	protected.HandleFunc("PATCH /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleUpdateServiceEnvVar)
 	protected.HandleFunc("DELETE /projects/{projectId}/services/{serviceId}/env-vars/{envVarId}", s.handleDeleteServiceEnvVar)
 
+	protected.HandleFunc("POST /projects/{projectId}/groups/{groupId}/env-vars", s.handleCreateGroupEnvVar)
+	protected.HandleFunc("GET /projects/{projectId}/groups/{groupId}/env-vars", s.handleListGroupEnvVars)
+	protected.HandleFunc("PATCH /projects/{projectId}/groups/{groupId}/env-vars/{envVarId}", s.handleUpdateGroupEnvVar)
+	protected.HandleFunc("DELETE /projects/{projectId}/groups/{groupId}/env-vars/{envVarId}", s.handleDeleteGroupEnvVar)
+
 	protected.HandleFunc("GET /presets/databases", s.handleListDatabasePresets)
 	protected.HandleFunc("GET /presets/databases/{presetId}", s.handleGetDatabasePreset)
 

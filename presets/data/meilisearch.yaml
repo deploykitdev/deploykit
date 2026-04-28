@@ -1,0 +1,10 @@
+id: meilisearch
+name: Meilisearch
+image: getmeili/meilisearch:v1.11
+icon_url: https://www.meilisearch.com/favicon.svg
+ports:
+  - container_port: 7700
+    protocol: tcp
+env_vars:
+  - { key: MEILI_ENV, value: production }
+  - { key: MEILI_MASTER_KEY, generate: password_24 }

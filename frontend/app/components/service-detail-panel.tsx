@@ -14,12 +14,16 @@ import { ServiceIconEditor } from "./service-icon-editor";
 interface ServiceDetailPanelProps {
   projectId: string;
   serviceId: string;
+  // Canvas group id this service is parented to, if any. Surfaces inherited
+  // group env vars in the Variables tab.
+  groupId?: string | null;
   onClose: () => void;
 }
 
 export function ServiceDetailPanel({
   projectId,
   serviceId,
+  groupId,
   onClose,
 }: ServiceDetailPanelProps) {
   const serviceQuery = useService(projectId, serviceId);
@@ -123,7 +127,11 @@ export function ServiceDetailPanel({
             />
           </TabPanel>
           <TabPanel value="variables" className="h-full overflow-y-auto p-5">
-            <ServiceVariablesTab projectId={projectId} serviceId={serviceId} />
+            <ServiceVariablesTab
+              projectId={projectId}
+              serviceId={serviceId}
+              groupId={groupId}
+            />
           </TabPanel>
           <TabPanel value="metrics" className="h-full overflow-y-auto p-5">
             <ServiceMetricsTab />
