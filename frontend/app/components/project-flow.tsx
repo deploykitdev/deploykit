@@ -11,8 +11,6 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import { toast } from "sonner";
-import { Link } from "react-router";
-import { SettingsIcon } from "lucide-react";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
 import { usePendingChanges, useProjectServices, type Service } from "@/lib/queries";
 import { collectServiceOverrides } from "@/lib/pending-changes-diff";
@@ -621,15 +619,6 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         zoomOnScroll={false}
       >
         <Background />
-        <Panel position="top-left">
-          <Link
-            to={`/projects/${projectId}/settings`}
-            title="Project settings"
-            className="flex size-8 items-center justify-center rounded-md border bg-background/80 text-muted-foreground backdrop-blur transition-colors hover:bg-background hover:text-foreground"
-          >
-            <SettingsIcon className="size-4" />
-          </Link>
-        </Panel>
         {selectedServiceId || selectedPendingNodeId ? null : (
           <Panel position="top-right">
             <AvatarStack users={connectedUsers} />
@@ -660,7 +649,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         ) : null}
         <CursorTracker onCursorMove={sendCursorMove} />
         <CursorOverlay cursors={cursors} />
-        <CanvasControls />
+        <CanvasControls projectId={projectId} />
       </ReactFlow>
       <CanvasContextMenu
         position={menu ? { x: menu.screenX, y: menu.screenY } : null}
