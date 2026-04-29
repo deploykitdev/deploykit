@@ -126,6 +126,11 @@ export function FloatingEdge({
               position: "absolute",
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
               pointerEvents: "all",
+              // Without an explicit z-index, the SVG edge stroke renders over
+              // the HTML label even though .react-flow__edgelabel-renderer is
+              // a later sibling — bumping the label above the auto-stacked
+              // edges layer keeps the dashed line from cutting through the text.
+              zIndex: 1,
               ...labelStyle,
             }}
             className="rounded bg-background/90 px-1.5 py-0.5 font-mono"
