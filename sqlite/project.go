@@ -175,7 +175,24 @@ func (s *ProjectService) UpdateProject(ctx context.Context, id string, update de
 }
 
 func (s *ProjectService) DeleteProject(ctx context.Context, id string) error {
-	result, err := s.db.db.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
+	tx, err := s.db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	var serviceCount int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM services WHERE project_id = ?`, id,
+	).Scan(&serviceCount); err != nil {
+		return fmt.Errorf("counting services for project %s: %w", id, err)
+	}
+	if serviceCount > 0 {
+		return deploykit.Errorf(deploykit.ECONFLICT,
+			"Project has %d service(s); delete them before deleting the project.", serviceCount)
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("deleting project %s: %w", id, err)
 	}
@@ -188,5 +205,8 @@ func (s *ProjectService) DeleteProject(ctx context.Context, id string) error {
 		return deploykit.Errorf(deploykit.ENOTFOUND, "Project not found.")
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit: %w", err)
+	}
 	return nil
 }

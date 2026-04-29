@@ -348,6 +348,17 @@ export function useUpdateProject(id: string) {
   });
 }
 
+export function useDeleteProject() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api(`/projects/${id}`, { method: "DELETE" }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: queryKeys.projects });
+    },
+  });
+}
+
 export function useUsers() {
   return useQuery({
     queryKey: queryKeys.users,

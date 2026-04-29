@@ -1,15 +1,17 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { ChevronLeftIcon } from "lucide-react";
 import { toast } from "sonner";
 import { RequireAuth } from "../lib/auth";
 import { ApiError } from "../lib/api";
 import {
   useCreateProjectEnvVar,
+  useDeleteProject,
   useDeleteProjectEnvVar,
   usePendingChanges,
   useProject,
   useProjectEnvVars,
+  useProjectServices,
   useRemovePendingChange,
   useUpdateProject,
   useUpdateProjectEnvVar,
@@ -17,6 +19,7 @@ import {
 } from "../lib/queries";
 import { DashboardLayout } from "@/components/dashboard-layout";
 import { EnvVarsSection } from "@/components/env-vars-section";
+import { ProjectDeleteDialog } from "@/components/project-delete-dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Field, FieldLabel, FieldError } from "@/components/ui/field";
@@ -162,38 +165,94 @@ function GeneralSection({ project }: { project: Project }) {
   }
 
   return (
-    <form onSubmit={handleSubmit}>
+    <div className="flex flex-col gap-6">
+      <form onSubmit={handleSubmit}>
+        <Card>
+          <CardHeader>
+            <CardTitle>Project name</CardTitle>
+            <CardDescription>
+              A human-friendly name for this project. The URL slug stays the
+              same.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <Field data-invalid={error ? true : undefined}>
+              <FieldLabel htmlFor="project-name">Name</FieldLabel>
+              <Input
+                id="project-name"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  if (error) setError("");
+                }}
+              />
+              <FieldError>{error || undefined}</FieldError>
+            </Field>
+            <p className="mt-3 text-xs text-muted-foreground">
+              Slug: <span className="font-mono">{project.slug}</span>
+            </p>
+          </CardContent>
+          <CardFooter>
+            <Button type="submit" disabled={!canSubmit}>
+              {updateProject.isPending ? "Saving..." : "Save"}
+            </Button>
+          </CardFooter>
+        </Card>
+      </form>
+      <DangerZone project={project} />
+    </div>
+  );
+}
+
+function DangerZone({ project }: { project: Project }) {
+  const navigate = useNavigate();
+  const services = useProjectServices(project.id);
+  const deleteProject = useDeleteProject();
+  const [confirming, setConfirming] = useState(false);
+
+  const serviceCount = services.data?.length ?? 0;
+  const hasServices = serviceCount > 0;
+  const canDelete = services.isSuccess && !hasServices;
+
+  async function handleDelete() {
+    await deleteProject.mutateAsync(project.id);
+    setConfirming(false);
+    toast.success("Project deleted");
+    navigate("/projects");
+  }
+
+  return (
+    <>
       <Card>
         <CardHeader>
-          <CardTitle>Project name</CardTitle>
+          <CardTitle>Delete project</CardTitle>
           <CardDescription>
-            A human-friendly name for this project. The URL slug stays the same.
+            Permanently delete this project. This action cannot be undone.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Field data-invalid={error ? true : undefined}>
-            <FieldLabel htmlFor="project-name">Name</FieldLabel>
-            <Input
-              id="project-name"
-              value={name}
-              onChange={(e) => {
-                setName(e.target.value);
-                if (error) setError("");
-              }}
-            />
-            <FieldError>{error || undefined}</FieldError>
-          </Field>
-          <p className="mt-3 text-xs text-muted-foreground">
-            Slug: <span className="font-mono">{project.slug}</span>
-          </p>
-        </CardContent>
+        {hasServices && (
+          <CardContent>
+            <p className="text-xs text-muted-foreground">
+              Delete all services before deleting this project.
+            </p>
+          </CardContent>
+        )}
         <CardFooter>
-          <Button type="submit" disabled={!canSubmit}>
-            {updateProject.isPending ? "Saving..." : "Save"}
+          <Button
+            variant="destructive"
+            disabled={!canDelete}
+            onClick={() => setConfirming(true)}
+          >
+            Delete project
           </Button>
         </CardFooter>
       </Card>
-    </form>
+      <ProjectDeleteDialog
+        project={confirming ? project : null}
+        onClose={() => setConfirming(false)}
+        onDelete={handleDelete}
+      />
+    </>
   );
 }
 

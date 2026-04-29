@@ -452,25 +452,4 @@ func TestEnvVarService_CascadeDelete(t *testing.T) {
 		}
 	})
 
-	t.Run("project delete also cascades to service-scoped vars", func(t *testing.T) {
-		db := MustOpenDB(t)
-		projectSvc := NewProjectService(db)
-		project := MustCreateProject(t, projectSvc, "p")
-		service := MustCreateService(t, db, project.ID, "web")
-		svc := NewEnvVarService(db)
-
-		// Service-scoped env var. When the project is deleted, services cascade
-		// via FK; the service-delete trigger should remove the service-scoped
-		// env var.
-		ev := MustCreateEnvVar(t, svc, deploykit.EnvVarScopeService, service.ID, "PORT", "8080")
-
-		if err := projectSvc.DeleteProject(context.Background(), project.ID); err != nil {
-			t.Fatal("deleting project:", err)
-		}
-
-		_, err := svc.GetEnvVar(context.Background(), ev.ID)
-		if code := deploykit.ErrorCode(err); code != deploykit.ENOTFOUND {
-			t.Fatalf("env var should be cascaded through service: got code %q", code)
-		}
-	})
 }

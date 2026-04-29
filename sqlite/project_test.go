@@ -391,4 +391,24 @@ func TestProjectService_DeleteProject(t *testing.T) {
 			t.Fatalf("got error code %q, want %q", code, deploykit.ENOTFOUND)
 		}
 	})
+
+	t.Run("conflict when project has services", func(t *testing.T) {
+		db := MustOpenDB(t)
+		svc := NewProjectService(db)
+		project := MustCreateProject(t, svc, "with-services")
+		MustCreateService(t, db, project.ID, "web")
+
+		err := svc.DeleteProject(context.Background(), project.ID)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if code := deploykit.ErrorCode(err); code != deploykit.ECONFLICT {
+			t.Fatalf("got error code %q, want %q", code, deploykit.ECONFLICT)
+		}
+
+		// Project must still exist after a rejected delete.
+		if _, err := svc.GetProject(context.Background(), project.ID); err != nil {
+			t.Fatalf("project should still exist after rejected delete: %v", err)
+		}
+	})
 }
