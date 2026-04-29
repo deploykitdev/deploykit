@@ -52,6 +52,16 @@ log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!!\033[0m  %s\n' "$*" >&2; }
 err()  { printf '\033[1;31mxx\033[0m  %s\n' "$*" >&2; write_status "failed" "$*" || true; exit 1; }
 
+# Catch the failure path that err() doesn't cover: a plain command failing
+# under `set -e`. Without this, the status file would stay "running" forever
+# and the systemd path unit would re-fire in a loop.
+on_err() {
+    local rc=$?
+    write_status "failed" "install.sh aborted (exit ${rc})" || true
+    exit "$rc"
+}
+trap on_err ERR
+
 # write_status writes a JSON status file when invoked under the upgrade unit
 # (UPGRADE_STATUS points at the file). No-op for interactive installs.
 write_status() {
@@ -302,16 +312,21 @@ download_binary() {
 # is gone after the script returns).
 stage_self() {
     local src="${BASH_SOURCE[0]:-}"
+    local dst="${LIB_DIR}/install.sh"
     if [ -z "$src" ] || [ ! -f "$src" ]; then
         # Running from a pipe — re-download the script. We can't read /dev/stdin
         # twice, so pull it from the same release tag for self-consistency.
         log "staging install.sh from release ${VERSION}"
-        curl -fsSL -o "${LIB_DIR}/install.sh" \
+        curl -fsSL -o "$dst" \
             "https://raw.githubusercontent.com/${GITHUB_REPO}/${VERSION}/install.sh"
+    elif [ "$src" -ef "$dst" ]; then
+        # Already the staged copy (re-invoked by deploykitd-upgrade.service).
+        # cp would fail with "same file" and abort the upgrade.
+        :
     else
-        cp -p "$src" "${LIB_DIR}/install.sh"
+        cp -p "$src" "$dst"
     fi
-    chmod 0755 "${LIB_DIR}/install.sh"
+    chmod 0755 "$dst"
 }
 
 write_units() {
@@ -362,7 +377,7 @@ After=network-online.target
 Type=oneshot
 # Read VERSION from the trigger file written by the deploykitd backend.
 ExecStart=/bin/bash -c 'VERSION="\$(cat ${DATA_DIR}/upgrade.requested)" UPGRADE_STATUS=${DATA_DIR}/upgrade.status UPGRADE_STARTED_AT="\$(date -u +%%Y-%%m-%%dT%%H:%%M:%%SZ)" ${LIB_DIR}/install.sh >> ${DATA_DIR}/upgrade.log 2>&1'
-ExecStartPost=/bin/rm -f ${DATA_DIR}/upgrade.requested
+ExecStopPost=/bin/rm -f ${DATA_DIR}/upgrade.requested
 EOF
 
     log "writing systemd unit ${UPGRADE_PATH_UNIT}"
