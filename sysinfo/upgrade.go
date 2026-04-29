@@ -184,6 +184,12 @@ func (s *Service) RequestUpgrade(ctx context.Context, version string) error {
 		}
 	}
 
+	// Truncate the log so the UI doesn't show output from earlier runs.
+	// install.sh appends to this file via the systemd unit's `>>` redirect.
+	if err := os.WriteFile(s.upgrades.log, nil, 0o644); err != nil && !errors.Is(err, os.ErrNotExist) {
+		s.logger.Warn("truncating upgrade log", "err", err)
+	}
+
 	// Atomic-ish write: tmp + rename so the path unit doesn't fire on a
 	// half-written file.
 	tmp := s.upgrades.requested + ".tmp"
