@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowUpCircle,
@@ -18,7 +18,6 @@ import {
 } from "@/components/ui/card";
 import {
   Dialog,
-  DialogClose,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -28,6 +27,7 @@ import {
 import {
   type SystemAbout,
   type SystemSettings,
+  type UpgradeStatus,
   useRefreshLatestRelease,
   useRequestUpgrade,
   useSystemSettings,
@@ -44,33 +44,36 @@ type Props = {
   onUpgradeFinished?: () => void;
 };
 
-export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
+type DialogView = "closed" | "confirm" | "progress";
 
-  // Poll the upgrade status only when the user has at least kicked one
-  // off (or when the runner reports it's still busy). 1.5s is brisk
-  // enough for log streaming without hammering the disk.
-  const [active, setActive] = useState(false);
+export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
+  const [dialogView, setDialogView] = useState<DialogView>("closed");
+
+  const refresh = useRefreshLatestRelease();
+  const requestUpgrade = useRequestUpgrade();
+  const settings = useSystemSettings();
+  const updateSettings = useUpdateSystemSettings();
+
   const upgradeStatus = useUpgradeStatus({
     enabled: true,
-    refetchMs: active ? 1500 : undefined,
+    refetchMs: 1500,
   });
   const status = upgradeStatus.data;
 
+  // keep showing running on transient query errors — install.sh restarts the
+  // API mid-upgrade, so polls will fail for a few seconds; we don't want to
+  // flash failed during that window.
+  const busy =
+    requestUpgrade.isPending ||
+    status?.state === "queued" ||
+    status?.state === "running";
+
   useEffect(() => {
     if (!status) return;
-    const busy = status.state === "queued" || status.state === "running";
-    setActive(busy);
     if (status.state === "done" || status.state === "failed") {
       onUpgradeFinished?.();
     }
   }, [status, onUpgradeFinished]);
-
-  const refresh = useRefreshLatestRelease();
-  const requestUpgrade = useRequestUpgrade();
-
-  const settings = useSystemSettings();
-  const updateSettings = useUpdateSystemSettings();
 
   const latest = about.latest_release;
   const updateAvailable = about.update_available;
@@ -79,9 +82,7 @@ export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
     if (!latest) return;
     try {
       await requestUpgrade.mutateAsync(latest.version);
-      setActive(true);
-      setConfirmOpen(false);
-      toast.success(`Upgrade to ${latest.version} queued.`);
+      setDialogView("progress");
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to start upgrade.",
@@ -99,6 +100,14 @@ export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
           : "Failed to save auto-update preference.",
       );
     }
+  };
+
+  const onPrimaryClick = () => {
+    setDialogView(busy ? "progress" : "confirm");
+  };
+
+  const onDialogOpenChange = (open: boolean) => {
+    if (!open) setDialogView("closed");
   };
 
   return (
@@ -135,15 +144,21 @@ export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
           </CardAction>
         </CardHeader>
         <CardContent className="space-y-4">
-          {updateAvailable && latest ? (
+          {(updateAvailable && latest) || busy ? (
             <div className="flex items-start justify-between gap-4 rounded-md border border-blue-500/30 bg-blue-500/5 p-3">
               <div className="flex items-start gap-2 text-sm">
                 <ArrowUpCircle className="mt-0.5 size-4 shrink-0 text-blue-500" />
                 <div>
                   <p className="font-medium text-foreground">
-                    {latest.version} is available
+                    {busy
+                      ? `Upgrading${
+                          status?.target_version
+                            ? ` to ${status.target_version}`
+                            : "…"
+                        }`
+                      : `${latest!.version} is available`}
                   </p>
-                  {latest.url && (
+                  {!busy && latest?.url && (
                     <a
                       href={latest.url}
                       target="_blank"
@@ -155,15 +170,11 @@ export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
                   )}
                 </div>
               </div>
-              <Button
-                size="sm"
-                onClick={() => setConfirmOpen(true)}
-                disabled={active}
-              >
-                {active ? (
+              <Button size="sm" onClick={onPrimaryClick}>
+                {busy ? (
                   <>
                     <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                    Upgrading
+                    View upgrade…
                   </>
                 ) : (
                   "Update now"
@@ -172,7 +183,7 @@ export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
             </div>
           ) : null}
 
-          <UpgradeProgress status={status} />
+          <UpgradeProgressBlock status={status} />
 
           <AutoUpdateRow
             settings={settings.data}
@@ -183,50 +194,196 @@ export function SystemUpdateCard({ about, onUpgradeFinished }: Props) {
         </CardContent>
       </Card>
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+      <Dialog
+        open={dialogView !== "closed"}
+        onOpenChange={onDialogOpenChange}
+      >
         <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Upgrade DeployKit?</DialogTitle>
-            <DialogDescription>
-              {latest && (
-                <>
-                  This will install{" "}
-                  <span className="font-mono">{latest.version}</span> and
-                  restart the API. You may briefly lose connection — the page
-                  will reconnect once the new version is up.
-                </>
-              )}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <DialogClose
-              render={(props) => (
-                <Button {...props} variant="outline">
-                  Cancel
-                </Button>
-              )}
+          {dialogView === "confirm" ? (
+            <ConfirmView
+              version={latest?.version}
+              onCancel={() => setDialogView("closed")}
+              onConfirm={onUpgrade}
+              starting={requestUpgrade.isPending}
             />
-            <Button onClick={onUpgrade} disabled={requestUpgrade.isPending}>
-              {requestUpgrade.isPending ? (
-                <>
-                  <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  Starting
-                </>
-              ) : (
-                "Upgrade"
-              )}
-            </Button>
-          </DialogFooter>
+          ) : (
+            <ProgressView
+              status={status}
+              starting={requestUpgrade.isPending}
+              onClose={() => setDialogView("closed")}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </>
   );
 }
 
-function UpgradeProgress({
+function ConfirmView({
+  version,
+  onCancel,
+  onConfirm,
+  starting,
+}: {
+  version: string | undefined;
+  onCancel: () => void;
+  onConfirm: () => void;
+  starting: boolean;
+}) {
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Upgrade DeployKit?</DialogTitle>
+        <DialogDescription>
+          {version && (
+            <>
+              This will install{" "}
+              <span className="font-mono">{version}</span> and restart the API.
+              You may briefly lose connection — the page will reconnect once
+              the new version is up.
+            </>
+          )}
+        </DialogDescription>
+      </DialogHeader>
+      <DialogFooter>
+        <Button variant="outline" onClick={onCancel} disabled={starting}>
+          Cancel
+        </Button>
+        <Button onClick={onConfirm} disabled={starting}>
+          {starting ? (
+            <>
+              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              Starting
+            </>
+          ) : (
+            "Upgrade"
+          )}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+function ProgressView({
+  status,
+  starting,
+  onClose,
+}: {
+  status: UpgradeStatus | undefined;
+  starting: boolean;
+  onClose: () => void;
+}) {
+  const stage = deriveStage(status, starting);
+
+  let title = "Starting upgrade…";
+  let description: React.ReactNode = null;
+  let icon = (
+    <Loader2 className="size-5 animate-spin text-blue-500" />
+  );
+
+  if (stage === "running") {
+    title = status?.target_version
+      ? `Installing ${status.target_version}…`
+      : "Installing…";
+    description = (
+      <>
+        The API will briefly restart. This dialog will keep streaming logs and
+        report the result when it's done.
+      </>
+    );
+  } else if (stage === "done") {
+    title = status?.target_version
+      ? `Upgrade complete — now running ${status.target_version}`
+      : "Upgrade complete";
+    description = "The new version is live.";
+    icon = <CheckCircle2 className="size-5 text-emerald-500" />;
+  } else if (stage === "failed") {
+    title = "Upgrade failed";
+    description = status?.error ?? "The installer reported an error.";
+    icon = <AlertCircle className="size-5 text-destructive" />;
+  } else if (stage === "starting") {
+    description = "Queuing the install request…";
+  }
+
+  return (
+    <>
+      <DialogHeader>
+        <div className="flex items-start gap-3">
+          {icon}
+          <div className="flex-1 min-w-0">
+            <DialogTitle>{title}</DialogTitle>
+            {description && (
+              <DialogDescription className="mt-1 break-words">
+                {description}
+              </DialogDescription>
+            )}
+          </div>
+        </div>
+      </DialogHeader>
+
+      <LogStream logTail={status?.log_tail} />
+
+      <DialogFooter>
+        {stage === "running" || stage === "starting" ? (
+          <Button variant="outline" onClick={onClose}>
+            Hide
+          </Button>
+        ) : (
+          <Button onClick={onClose}>Close</Button>
+        )}
+      </DialogFooter>
+    </>
+  );
+}
+
+type Stage = "starting" | "running" | "done" | "failed";
+
+function deriveStage(
+  status: UpgradeStatus | undefined,
+  starting: boolean,
+): Stage {
+  if (status?.state === "done") return "done";
+  if (status?.state === "failed") return "failed";
+  if (status?.state === "queued" || status?.state === "running") {
+    return "running";
+  }
+  if (starting) return "starting";
+  return "starting";
+}
+
+function LogStream({ logTail }: { logTail: string | undefined }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const stickyRef = useRef(true);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || !stickyRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [logTail]);
+
+  const onScroll = () => {
+    const el = ref.current;
+    if (!el) return;
+    const distanceFromBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickyRef.current = distanceFromBottom < 16;
+  };
+
+  return (
+    <pre
+      ref={ref}
+      onScroll={onScroll}
+      className="max-h-64 min-h-32 overflow-auto rounded bg-muted/50 p-3 font-mono text-xs leading-snug whitespace-pre-wrap break-words"
+    >
+      {logTail?.trim() ? logTail : "Waiting for installer output…"}
+    </pre>
+  );
+}
+
+function UpgradeProgressBlock({
   status,
 }: {
-  status: ReturnType<typeof useUpgradeStatus>["data"];
+  status: UpgradeStatus | undefined;
 }) {
   if (!status || status.state === "idle") return null;
 
