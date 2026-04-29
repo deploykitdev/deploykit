@@ -261,7 +261,10 @@ verify_signature() {
 }
 
 download_binary() {
-    local tmp asset url base
+    # tmp is intentionally NOT `local`: the EXIT trap below fires after the
+    # function returns, by which point a function-local would be out of scope
+    # and `set -u` would abort with "tmp: unbound variable".
+    local asset url base
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
 
