@@ -101,9 +101,13 @@ detect_platform() {
 resolve_version() {
     if [ "$VERSION" = "latest" ]; then
         log "resolving latest release from github.com/${GITHUB_REPO}"
-        VERSION="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest" \
-            | grep -m1 '"tag_name":' \
-            | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/')"
+        # Buffer the response first: piping curl into `grep -m1` under
+        # `set -o pipefail` makes grep close the pipe early, curl gets EPIPE,
+        # and the script aborts with `curl: (23)`.
+        local response
+        response="$(curl -fsSL "https://api.github.com/repos/${GITHUB_REPO}/releases/latest")" \
+            || err "could not reach github.com/${GITHUB_REPO} releases API"
+        VERSION="$(printf '%s' "$response" | sed -nE 's/.*"tag_name": *"([^"]+)".*/\1/p' | head -n1)"
         [ -n "$VERSION" ] || err "could not determine latest version"
     fi
 }
