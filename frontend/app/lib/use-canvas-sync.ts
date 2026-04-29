@@ -17,6 +17,7 @@ import {
   type Deployment,
   type PendingChange,
 } from "./queries";
+import { randomUUID } from "./utils";
 
 export interface CursorInfo {
   user_id: string;
@@ -713,7 +714,7 @@ export function useCanvasSync(projectId: string) {
 
   const openServiceDraft = useCallback(
     (x: number, y: number, prefill?: ServiceDraftPrefill) => {
-      const draftId = crypto.randomUUID();
+      const draftId = randomUUID();
       setLocalDrafts((prev) => {
         const next = new Map(prev);
         next.set(draftId, {
@@ -747,7 +748,7 @@ export function useCanvasSync(projectId: string) {
 
   const addNote = useCallback(
     (x: number, y: number, backgroundColor: string) => {
-      const id = crypto.randomUUID();
+      const id = randomUUID();
       wsRef.current?.send("node:upsert", {
         id,
         type: "note",
@@ -763,7 +764,7 @@ export function useCanvasSync(projectId: string) {
   );
 
   const addGroup = useCallback((x: number, y: number) => {
-    const id = crypto.randomUUID();
+    const id = randomUUID();
     wsRef.current?.send("node:upsert", {
       id,
       type: "group",
