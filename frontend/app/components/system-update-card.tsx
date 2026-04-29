@@ -375,9 +375,116 @@ function LogStream({ logTail }: { logTail: string | undefined }) {
       onScroll={onScroll}
       className="max-h-64 min-h-32 overflow-auto rounded bg-muted/50 p-3 font-mono text-xs leading-snug whitespace-pre-wrap break-words"
     >
-      {logTail?.trim() ? logTail : "Waiting for installer output…"}
+      {logTail?.trim() ? (
+        <AnsiText text={logTail} />
+      ) : (
+        "Waiting for installer output…"
+      )}
     </pre>
   );
+}
+
+// Minimal SGR parser — handles bold/dim/italic/underline + standard and
+// bright foreground colors. Enough for install.sh, which only uses bold +
+// blue/yellow/red.
+const ANSI_RE = /\x1b\[([0-9;]*)m/g;
+
+const ANSI_FG: Record<number, string> = {
+  30: "#6b7280", // black -> gray-500 (visible on dark muted bg)
+  31: "#ef4444",
+  32: "#22c55e",
+  33: "#eab308",
+  34: "#3b82f6",
+  35: "#d946ef",
+  36: "#06b6d4",
+  37: "#e5e7eb",
+  90: "#9ca3af",
+  91: "#f87171",
+  92: "#4ade80",
+  93: "#facc15",
+  94: "#60a5fa",
+  95: "#e879f9",
+  96: "#22d3ee",
+  97: "#f9fafb",
+};
+
+type AnsiStyle = {
+  bold?: boolean;
+  dim?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  color?: string;
+};
+
+function applySgr(style: AnsiStyle, params: string): AnsiStyle {
+  const codes = params === "" ? [0] : params.split(";").map((p) => Number(p) || 0);
+  let next = { ...style };
+  for (const code of codes) {
+    if (code === 0) next = {};
+    else if (code === 1) next.bold = true;
+    else if (code === 2) next.dim = true;
+    else if (code === 3) next.italic = true;
+    else if (code === 4) next.underline = true;
+    else if (code === 22) {
+      next.bold = false;
+      next.dim = false;
+    } else if (code === 23) next.italic = false;
+    else if (code === 24) next.underline = false;
+    else if (code === 39) next.color = undefined;
+    else if (ANSI_FG[code]) next.color = ANSI_FG[code];
+  }
+  return next;
+}
+
+function styleToCss(s: AnsiStyle): React.CSSProperties | undefined {
+  if (!s.bold && !s.dim && !s.italic && !s.underline && !s.color) return undefined;
+  return {
+    fontWeight: s.bold ? 600 : undefined,
+    opacity: s.dim ? 0.7 : undefined,
+    fontStyle: s.italic ? "italic" : undefined,
+    textDecoration: s.underline ? "underline" : undefined,
+    color: s.color,
+  };
+}
+
+function AnsiText({ text }: { text: string }) {
+  const parts: React.ReactNode[] = [];
+  let style: AnsiStyle = {};
+  let last = 0;
+  let key = 0;
+
+  ANSI_RE.lastIndex = 0;
+  for (let m = ANSI_RE.exec(text); m !== null; m = ANSI_RE.exec(text)) {
+    if (m.index > last) {
+      const chunk = text.slice(last, m.index);
+      const css = styleToCss(style);
+      parts.push(
+        css ? (
+          <span key={key++} style={css}>
+            {chunk}
+          </span>
+        ) : (
+          <span key={key++}>{chunk}</span>
+        ),
+      );
+    }
+    style = applySgr(style, m[1]);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) {
+    const chunk = text.slice(last);
+    const css = styleToCss(style);
+    parts.push(
+      css ? (
+        <span key={key++} style={css}>
+          {chunk}
+        </span>
+      ) : (
+        <span key={key++}>{chunk}</span>
+      ),
+    );
+  }
+  return <>{parts}</>;
 }
 
 function UpgradeProgressBlock({
@@ -408,8 +515,8 @@ function UpgradeProgressBlock({
         <p className="mt-2 break-all text-destructive">{status.error}</p>
       )}
       {status.log_tail && (
-        <pre className="mt-2 max-h-40 overflow-auto rounded bg-background p-2 font-mono text-xs leading-snug">
-          {status.log_tail}
+        <pre className="mt-2 max-h-40 overflow-auto rounded bg-background p-2 font-mono text-xs leading-snug whitespace-pre-wrap break-words">
+          <AnsiText text={status.log_tail} />
         </pre>
       )}
     </div>
