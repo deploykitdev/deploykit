@@ -198,6 +198,20 @@ backup_db() {
     log "snapshotting database to ${backup}"
     cp -p "$db" "$backup"
     chown "${SERVICE_USER}:${SERVICE_USER}" "$backup"
+    prune_backups "$db" 5
+}
+
+# prune_backups keeps the N most recent deploykit.db.bak-* files and removes
+# the rest. Snapshots are tiny (megabytes) but accumulate one per upgrade.
+prune_backups() {
+    local db="$1"
+    local keep="$2"
+    local old
+    # shellcheck disable=SC2012  # backup names don't contain newlines.
+    ls -1t "${db}.bak-"* 2>/dev/null | tail -n +"$((keep + 1))" | while IFS= read -r old; do
+        log "pruning old backup ${old}"
+        rm -f -- "$old"
+    done
 }
 
 # ensure_cosign installs the cosign binary into LIB_DIR if it isn't already
