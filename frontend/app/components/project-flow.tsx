@@ -12,6 +12,7 @@ import {
 } from "@xyflow/react";
 import { toast } from "sonner";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
+import { CanvasLoader } from "./canvas-loader";
 import { usePendingChanges, useProjectServices, type Service } from "@/lib/queries";
 import { collectServiceOverrides } from "@/lib/pending-changes-diff";
 import { CursorOverlay } from "./cursor-overlay";
@@ -68,6 +69,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     cursors,
     connectedUsers,
     connectionStatus,
+    isInitialStateLoaded,
     remoteDrafts,
     localDrafts,
     reconnect,
@@ -690,6 +692,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
         groupNodes={groupNodesForPanel}
         serviceParents={serviceParentsForPanel}
       />
+      {!isInitialStateLoaded && <CanvasLoader />}
     </div>
   );
 }

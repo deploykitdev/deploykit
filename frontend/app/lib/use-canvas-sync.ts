@@ -239,6 +239,7 @@ export function useCanvasSync(projectId: string) {
   const [connectedUsers, setConnectedUsers] = useState<ConnectedUser[]>([]);
   const [connectionStatus, setConnectionStatus] =
     useState<ConnectionStatus>("disconnected");
+  const [isInitialStateLoaded, setIsInitialStateLoaded] = useState(false);
   const prevStatusRef = useRef<ConnectionStatus>("disconnected");
   const [remoteDrafts, setRemoteDrafts] = useState<Map<string, ServiceDraft>>(
     new Map(),
@@ -257,14 +258,32 @@ export function useCanvasSync(projectId: string) {
   const lerpRafRef = useRef<number>(0);
 
   useEffect(() => {
+    setIsInitialStateLoaded(false);
     const ws = new CanvasWebSocket(projectId);
     wsRef.current = ws;
+
+    // Dev escape hatch: ?slow-canvas=2000 delays applying the initial
+    // canvas:state by N ms so the loading overlay is observable on localhost.
+    const slowCanvasMs = (() => {
+      if (typeof window === "undefined") return 0;
+      const raw = new URLSearchParams(window.location.search).get("slow-canvas");
+      const n = raw ? parseInt(raw, 10) : 0;
+      return Number.isFinite(n) && n > 0 ? n : 0;
+    })();
 
     ws.on<{ nodes: CanvasNode[]; edges: CanvasEdge[] }>(
       "canvas:state",
       (payload) => {
-        setNodes(ensureParentsFirst(payload.nodes.map(toFlowNode)));
-        setEdges(payload.edges.map(toFlowEdge));
+        const apply = () => {
+          setNodes(ensureParentsFirst(payload.nodes.map(toFlowNode)));
+          setEdges(payload.edges.map(toFlowEdge));
+          setIsInitialStateLoaded(true);
+        };
+        if (slowCanvasMs > 0) {
+          setTimeout(apply, slowCanvasMs);
+        } else {
+          apply();
+        }
       },
     );
 
@@ -964,6 +983,7 @@ export function useCanvasSync(projectId: string) {
     cursors,
     connectedUsers,
     connectionStatus,
+    isInitialStateLoaded,
     remoteDrafts,
     localDrafts,
     reconnect,
