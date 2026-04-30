@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   siAngular,
   siAstro,
@@ -96,21 +96,32 @@ function useRandomSlots(
   const [slots, setSlots] = useState<SimpleIcon[]>(() =>
     shuffle(pool).slice(0, slotCount),
   );
+  const queueRef = useRef<number[]>([]);
+  const lastSlotRef = useRef<number>(-1);
 
   useEffect(() => {
     if (pool.length <= slotCount) return;
     const id = setInterval(() => {
       setSlots((prev) => {
-        const slotToUpdate = Math.floor(Math.random() * slotCount);
+        if (queueRef.current.length === 0) {
+          const indices = Array.from({ length: slotCount }, (_, i) => i);
+          const shuffled = shuffle(indices);
+          if (shuffled[0] === lastSlotRef.current && shuffled.length > 1) {
+            [shuffled[0], shuffled[1]] = [shuffled[1], shuffled[0]];
+          }
+          queueRef.current = shuffled;
+        }
+        const slotToUpdate = queueRef.current.shift() as number;
+        lastSlotRef.current = slotToUpdate;
+
         const taken = new Set(
-          prev
-            .filter((_, i) => i !== slotToUpdate)
-            .map((icon) => icon.slug),
+          prev.filter((_, i) => i !== slotToUpdate).map((icon) => icon.slug),
         );
         taken.add(prev[slotToUpdate].slug);
         const candidates = pool.filter((p) => !taken.has(p.slug));
         if (candidates.length === 0) return prev;
         const next = candidates[Math.floor(Math.random() * candidates.length)];
+
         const newSlots = [...prev];
         newSlots[slotToUpdate] = next;
         return newSlots;
@@ -229,13 +240,13 @@ function StackNode({ x, rotate, bobIndex, icon }: StackNodeProps) {
 }
 
 export function WelcomeHero() {
-  const slots = useRandomSlots(ICON_POOL, 3, 1800);
+  const slots = useRandomSlots(ICON_POOL, 3, 4000);
 
   return (
     <div className="relative mx-auto h-52 w-full text-primary">
       <div
         aria-hidden
-        className="pointer-events-none absolute left-1/2 top-1/2 -z-10 size-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/8 blur-3xl"
+        className="pointer-events-none absolute left-1/2 top-1/2 -z-10 hidden size-72 -translate-x-1/2 -translate-y-1/2 rounded-full bg-primary/8 blur-3xl dark:block"
       />
       <svg
         viewBox="0 0 480 240"
