@@ -6,17 +6,9 @@ import { ProjectFlow } from "@/components/project-flow";
 
 function ProjectDetail() {
   const { id } = useParams();
-  const { data: project, isLoading } = useProject(id!);
+  const { data: project, isLoading, isError } = useProject(id!);
 
-  if (isLoading) {
-    return (
-      <DashboardLayout>
-        <p>Loading...</p>
-      </DashboardLayout>
-    );
-  }
-
-  if (!project) {
+  if (!isLoading && (isError || !project)) {
     return (
       <DashboardLayout>
         <p>Project not found</p>
@@ -26,7 +18,7 @@ function ProjectDetail() {
 
   return (
     <DashboardLayout fluid>
-      <ProjectFlow projectId={project.id} />
+      <ProjectFlow projectId={id!} />
     </DashboardLayout>
   );
 }
