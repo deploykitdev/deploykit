@@ -1,16 +1,21 @@
 import { useEffect } from "react";
 import { useNavigate } from "react-router";
-import { useAuth } from "../lib/auth";
+import { useAuth, useCanRegister } from "../lib/auth";
 
 export default function Index() {
   const { user, loading } = useAuth();
+  const canRegister = useCanRegister();
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!loading) {
-      navigate(user ? "/projects" : "/login", { replace: true });
+    if (loading) return;
+    if (user) {
+      navigate("/projects", { replace: true });
+      return;
     }
-  }, [user, loading, navigate]);
+    if (canRegister === null) return;
+    navigate(canRegister ? "/setup" : "/login", { replace: true });
+  }, [user, loading, canRegister, navigate]);
 
   return null;
 }

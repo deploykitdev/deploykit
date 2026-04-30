@@ -154,3 +154,15 @@
 .react-flow__edge.managed-edge .react-flow__edge-path {
   animation: managed-edge-flow 0.6s linear infinite;
 }
+
+@keyframes welcome-node-bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+
+@layer utilities {
+  .bg-canvas-dots {
+    background-image: radial-gradient(circle, var(--color-border) 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+}

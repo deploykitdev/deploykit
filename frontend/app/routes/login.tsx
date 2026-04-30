@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router";
-import { useAuth } from "../lib/auth";
+import { useNavigate, useSearchParams } from "react-router";
+import { useAuth, useCanRegister } from "../lib/auth";
 import { AuthLayout } from "@/components/auth-layout";
 import { Button } from "@/components/ui/button";
 import { Field, FieldError, FieldLabel } from "@/components/ui/field";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 
 export default function Login() {
   const { user, loading, login } = useAuth();
+  const canRegister = useCanRegister();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const redirectTo = searchParams.get("redirect") || "/";
@@ -21,6 +22,12 @@ export default function Login() {
       navigate(redirectTo, { replace: true });
     }
   }, [user, loading, navigate, redirectTo]);
+
+  useEffect(() => {
+    if (!loading && !user && canRegister === true) {
+      navigate("/setup", { replace: true });
+    }
+  }, [canRegister, loading, user, navigate]);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -70,12 +77,6 @@ export default function Login() {
           <Button type="submit" className="w-full">
             Login
           </Button>
-        </div>
-        <div className="text-center text-sm">
-          Don&apos;t have an account?{" "}
-          <Link to="/register" className="underline underline-offset-4">
-            Sign up
-          </Link>
         </div>
       </form>
     </AuthLayout>

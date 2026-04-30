@@ -133,3 +133,23 @@ export function useIsAdmin() {
   const { user } = useAuth();
   return user?.role === "admin";
 }
+
+export function useCanRegister(): boolean | null {
+  const [canRegister, setCanRegister] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api<{ can_register: boolean }>("/auth/register")
+      .then((data) => {
+        if (!cancelled) setCanRegister(data.can_register);
+      })
+      .catch(() => {
+        if (!cancelled) setCanRegister(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return canRegister;
+}
