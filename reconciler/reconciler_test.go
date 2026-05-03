@@ -82,6 +82,12 @@ func (m *mockProvisioner) StopAndRemoveContainer(context.Context, string) error 
 func (m *mockProvisioner) ListContainers(context.Context) ([]deploykit.RunningContainer, error) {
 	return nil, nil
 }
+func (m *mockProvisioner) InspectContainer(context.Context, string) (*deploykit.ContainerInspection, error) {
+	return nil, nil
+}
+func (m *mockProvisioner) GetContainerLogTail(context.Context, string, int) (string, error) {
+	return "", nil
+}
 
 func testProject(id, slug string) *deploykit.Project {
 	return &deploykit.Project{ID: id, Slug: slug}

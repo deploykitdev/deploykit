@@ -22,6 +22,10 @@ func NewDeploymentService(db *DB) *DeploymentService {
 	return &DeploymentService{db: db}
 }
 
+// deploymentColumns is the SELECT list used by every read; keeping it in one
+// place ensures GetDeployment/ListDeployments/ListInFlightDeployments stay aligned.
+const deploymentColumns = `id, service_id, image, env_vars, ports, resources, replicas, status, failure_reason, exit_code, log_tail, baseline_restart_count, attempt_count, started_at, healthy_at, created_at`
+
 func (s *DeploymentService) CreateDeployment(ctx context.Context, serviceID string, create deploykit.DeploymentCreate) (*deploykit.Deployment, error) {
 	if err := create.Validate(); err != nil {
 		return nil, err
@@ -33,9 +37,12 @@ func (s *DeploymentService) CreateDeployment(ctx context.Context, serviceID stri
 	}
 	defer tx.Rollback()
 
-	// Verify service exists.
-	var exists bool
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM services WHERE id = ?`, serviceID).Scan(&exists)
+	// Verify service exists and capture whether it has an active deployment;
+	// we only flip service.status to "deploying" for first deploys.
+	var activeDepID sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT active_deployment_id FROM services WHERE id = ?`, serviceID,
+	).Scan(&activeDepID)
 	if err == sql.ErrNoRows {
 		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Service not found.")
 	} else if err != nil {
@@ -86,6 +93,7 @@ func (s *DeploymentService) CreateDeployment(ctx context.Context, serviceID stri
 		Ports:     ports,
 		Resources: create.Resources,
 		Replicas:  replicas,
+		Status:    deploykit.DeploymentStatusPending,
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -95,24 +103,41 @@ func (s *DeploymentService) CreateDeployment(ctx context.Context, serviceID stri
 	}
 
 	_, err = tx.ExecContext(ctx,
-		`INSERT INTO deployments (id, service_id, image, env_vars, ports, resources, replicas, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO deployments (id, service_id, image, env_vars, ports, resources, replicas, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		deployment.ID, deployment.ServiceID, deployment.Image,
 		string(envVarsJSON), string(portsJSON), resourcesArg,
-		deployment.Replicas,
+		deployment.Replicas, deployment.Status,
 		deployment.CreatedAt.Format(timeFormat),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("creating deployment: %w", err)
 	}
 
-	// Set this deployment as the active deployment and update service status.
+	// Cancel any previously-pending or starting deployment for this service —
+	// the reconciler should focus on the latest attempt.
 	_, err = tx.ExecContext(ctx,
-		`UPDATE services SET active_deployment_id = ?, status = ?, updated_at = ? WHERE id = ?`,
-		deployment.ID, deploykit.ServiceStatusDeploying,
-		time.Now().UTC().Format(timeFormat), serviceID,
+		`UPDATE deployments SET status = ?
+		 WHERE service_id = ? AND id != ? AND status IN (?, ?)`,
+		deploykit.DeploymentStatusCancelled, serviceID, deployment.ID,
+		deploykit.DeploymentStatusPending, deploykit.DeploymentStatusStarting,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("updating service active deployment: %w", err)
+		return nil, fmt.Errorf("cancelling prior in-flight deployments: %w", err)
+	}
+
+	// First-deploy UX: when the service has no active deployment, surface
+	// "deploying" on the service row. For subsequent redeploys, leave service
+	// status alone — the prior healthy deployment is still serving.
+	if !activeDepID.Valid {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE services SET status = ?, updated_at = ? WHERE id = ?`,
+			deploykit.ServiceStatusDeploying,
+			time.Now().UTC().Format(timeFormat), serviceID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("setting service status: %w", err)
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -122,36 +147,72 @@ func (s *DeploymentService) CreateDeployment(ctx context.Context, serviceID stri
 	return deployment, nil
 }
 
-func (s *DeploymentService) GetDeployment(ctx context.Context, id string) (*deploykit.Deployment, error) {
-	d := &deploykit.Deployment{}
+// scanDeployment scans one row from a SELECT that uses deploymentColumns.
+func scanDeployment(row interface {
+	Scan(dest ...any) error
+}, d *deploykit.Deployment) error {
 	var createdAt string
-	var envVarsRaw, portsRaw string
-	var resourcesRaw sql.NullString
-
-	err := s.db.db.QueryRowContext(ctx,
-		`SELECT id, service_id, image, env_vars, ports, resources, replicas, created_at FROM deployments WHERE id = ?`, id,
-	).Scan(&d.ID, &d.ServiceID, &d.Image, &envVarsRaw, &portsRaw, &resourcesRaw, &d.Replicas, &createdAt)
-	if err == sql.ErrNoRows {
-		return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Deployment not found.")
-	} else if err != nil {
-		return nil, fmt.Errorf("getting deployment %s: %w", id, err)
+	var envVarsRaw, portsRaw, status string
+	var resourcesRaw, failureReason, logTail, startedAt, healthyAt sql.NullString
+	var exitCode sql.NullInt64
+	if err := row.Scan(
+		&d.ID, &d.ServiceID, &d.Image,
+		&envVarsRaw, &portsRaw, &resourcesRaw, &d.Replicas,
+		&status, &failureReason, &exitCode, &logTail, &d.BaselineRestartCount,
+		&d.AttemptCount, &startedAt, &healthyAt,
+		&createdAt,
+	); err != nil {
+		return err
 	}
 
 	if err := json.Unmarshal([]byte(envVarsRaw), &d.EnvVars); err != nil {
-		return nil, fmt.Errorf("unmarshaling env vars: %w", err)
+		return fmt.Errorf("unmarshaling env vars: %w", err)
 	}
 	if err := json.Unmarshal([]byte(portsRaw), &d.Ports); err != nil {
-		return nil, fmt.Errorf("unmarshaling ports: %w", err)
+		return fmt.Errorf("unmarshaling ports: %w", err)
 	}
 	if resourcesRaw.Valid {
 		d.Resources = &deploykit.ResourceLimits{}
 		if err := json.Unmarshal([]byte(resourcesRaw.String), d.Resources); err != nil {
-			return nil, fmt.Errorf("unmarshaling resources: %w", err)
+			return fmt.Errorf("unmarshaling resources: %w", err)
 		}
 	}
-
+	d.Status = status
+	if failureReason.Valid {
+		s := failureReason.String
+		d.FailureReason = &s
+	}
+	if exitCode.Valid {
+		ec := int(exitCode.Int64)
+		d.ExitCode = &ec
+	}
+	if logTail.Valid {
+		s := logTail.String
+		d.LogTail = &s
+	}
+	if startedAt.Valid {
+		t, _ := time.Parse(timeFormat, startedAt.String)
+		d.StartedAt = &t
+	}
+	if healthyAt.Valid {
+		t, _ := time.Parse(timeFormat, healthyAt.String)
+		d.HealthyAt = &t
+	}
 	d.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	return nil
+}
 
+func (s *DeploymentService) GetDeployment(ctx context.Context, id string) (*deploykit.Deployment, error) {
+	d := &deploykit.Deployment{}
+	row := s.db.db.QueryRowContext(ctx,
+		`SELECT `+deploymentColumns+` FROM deployments WHERE id = ?`, id,
+	)
+	if err := scanDeployment(row, d); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, deploykit.Errorf(deploykit.ENOTFOUND, "Deployment not found.")
+		}
+		return nil, fmt.Errorf("getting deployment %s: %w", id, err)
+	}
 	return d, nil
 }
 
@@ -176,7 +237,7 @@ func (s *DeploymentService) ListDeployments(ctx context.Context, filter deployki
 	}
 
 	query := fmt.Sprintf(
-		`SELECT id, service_id, image, env_vars, ports, resources, replicas, created_at, COUNT(*) OVER() AS total_count
+		`SELECT `+deploymentColumns+`, COUNT(*) OVER() AS total_count
 		 FROM deployments WHERE %s ORDER BY created_at DESC LIMIT ? OFFSET ?`,
 		strings.Join(where, " AND "),
 	)
@@ -193,10 +254,18 @@ func (s *DeploymentService) ListDeployments(ctx context.Context, filter deployki
 
 	for rows.Next() {
 		d := &deploykit.Deployment{}
+		// Wrap rows so we can append totalCount to the scan target list.
 		var createdAt string
-		var envVarsRaw, portsRaw string
-		var resourcesRaw sql.NullString
-		if err := rows.Scan(&d.ID, &d.ServiceID, &d.Image, &envVarsRaw, &portsRaw, &resourcesRaw, &d.Replicas, &createdAt, &totalCount); err != nil {
+		var envVarsRaw, portsRaw, status string
+		var resourcesRaw, failureReason, logTail, startedAt, healthyAt sql.NullString
+		var exitCode sql.NullInt64
+		if err := rows.Scan(
+			&d.ID, &d.ServiceID, &d.Image,
+			&envVarsRaw, &portsRaw, &resourcesRaw, &d.Replicas,
+			&status, &failureReason, &exitCode, &logTail, &d.BaselineRestartCount,
+			&d.AttemptCount, &startedAt, &healthyAt,
+			&createdAt, &totalCount,
+		); err != nil {
 			return nil, 0, fmt.Errorf("scanning deployment row: %w", err)
 		}
 		if err := json.Unmarshal([]byte(envVarsRaw), &d.EnvVars); err != nil {
@@ -211,6 +280,27 @@ func (s *DeploymentService) ListDeployments(ctx context.Context, filter deployki
 				return nil, 0, fmt.Errorf("unmarshaling resources: %w", err)
 			}
 		}
+		d.Status = status
+		if failureReason.Valid {
+			fr := failureReason.String
+			d.FailureReason = &fr
+		}
+		if exitCode.Valid {
+			ec := int(exitCode.Int64)
+			d.ExitCode = &ec
+		}
+		if logTail.Valid {
+			lt := logTail.String
+			d.LogTail = &lt
+		}
+		if startedAt.Valid {
+			t, _ := time.Parse(timeFormat, startedAt.String)
+			d.StartedAt = &t
+		}
+		if healthyAt.Valid {
+			t, _ := time.Parse(timeFormat, healthyAt.String)
+			d.HealthyAt = &t
+		}
 		d.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		deployments = append(deployments, d)
 	}
@@ -219,6 +309,218 @@ func (s *DeploymentService) ListDeployments(ctx context.Context, filter deployki
 	}
 
 	return deployments, totalCount, nil
+}
+
+func (s *DeploymentService) ListInFlightDeployments(ctx context.Context) ([]*deploykit.Deployment, error) {
+	rows, err := s.db.db.QueryContext(ctx,
+		`SELECT `+deploymentColumns+` FROM deployments
+		 WHERE status IN (?, ?, ?)
+		 ORDER BY created_at ASC`,
+		deploykit.DeploymentStatusPending,
+		deploykit.DeploymentStatusStarting,
+		deploykit.DeploymentStatusHealthy,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("listing in-flight deployments: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*deploykit.Deployment
+	for rows.Next() {
+		d := &deploykit.Deployment{}
+		if err := scanDeployment(rows, d); err != nil {
+			return nil, fmt.Errorf("scanning in-flight deployment: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating in-flight deployment rows: %w", err)
+	}
+	return out, nil
+}
+
+func (s *DeploymentService) MarkDeploymentStarting(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format(timeFormat)
+	res, err := s.db.db.ExecContext(ctx,
+		`UPDATE deployments SET status = ?, started_at = COALESCE(started_at, ?)
+		 WHERE id = ? AND status = ?`,
+		deploykit.DeploymentStatusStarting, now, id, deploykit.DeploymentStatusPending,
+	)
+	if err != nil {
+		return fmt.Errorf("marking deployment %s starting: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		// Either already starting/healthy/failed/cancelled, or doesn't exist.
+		// Verify existence — if missing, surface ENOTFOUND. Otherwise treat as no-op.
+		var exists int
+		if err := s.db.db.QueryRowContext(ctx, `SELECT 1 FROM deployments WHERE id = ?`, id).Scan(&exists); err == sql.ErrNoRows {
+			return deploykit.Errorf(deploykit.ENOTFOUND, "Deployment not found.")
+		}
+	}
+	return nil
+}
+
+func (s *DeploymentService) MarkDeploymentHealthy(ctx context.Context, id string, baselineRestartCount int) (string, error) {
+	tx, err := s.db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var serviceID string
+	var status string
+	err = tx.QueryRowContext(ctx,
+		`SELECT service_id, status FROM deployments WHERE id = ?`, id,
+	).Scan(&serviceID, &status)
+	if err == sql.ErrNoRows {
+		return "", deploykit.Errorf(deploykit.ENOTFOUND, "Deployment not found.")
+	} else if err != nil {
+		return "", fmt.Errorf("looking up deployment %s: %w", id, err)
+	}
+	if status == deploykit.DeploymentStatusHealthy {
+		// Already healthy — likely a re-entrant call. Nothing to do.
+		return "", tx.Commit()
+	}
+
+	var priorActive sql.NullString
+	err = tx.QueryRowContext(ctx,
+		`SELECT active_deployment_id FROM services WHERE id = ?`, serviceID,
+	).Scan(&priorActive)
+	if err != nil {
+		return "", fmt.Errorf("looking up service %s: %w", serviceID, err)
+	}
+
+	now := time.Now().UTC().Format(timeFormat)
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE deployments SET status = ?, healthy_at = ?, baseline_restart_count = ?, failure_reason = NULL
+		 WHERE id = ?`,
+		deploykit.DeploymentStatusHealthy, now, baselineRestartCount, id,
+	)
+	if err != nil {
+		return "", fmt.Errorf("marking deployment healthy: %w", err)
+	}
+
+	priorActiveID := ""
+	if priorActive.Valid && priorActive.String != id {
+		priorActiveID = priorActive.String
+		_, err = tx.ExecContext(ctx,
+			`UPDATE deployments SET status = ? WHERE id = ? AND status = ?`,
+			deploykit.DeploymentStatusSuperseded, priorActiveID, deploykit.DeploymentStatusHealthy,
+		)
+		if err != nil {
+			return "", fmt.Errorf("superseding prior deployment %s: %w", priorActiveID, err)
+		}
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE services SET active_deployment_id = ?, updated_at = ? WHERE id = ?`,
+		id, now, serviceID,
+	)
+	if err != nil {
+		return "", fmt.Errorf("flipping service active deployment: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", fmt.Errorf("committing healthy transition: %w", err)
+	}
+
+	return priorActiveID, nil
+}
+
+// logTailMaxBytes caps log_tail storage to keep deployment rows compact.
+const logTailMaxBytes = 10 * 1024
+
+func (s *DeploymentService) MarkDeploymentFailed(ctx context.Context, id string, reason string, exitCode *int, logTail string) error {
+	// Truncate from the front so the panic / final lines (the useful part)
+	// survive the cap.
+	if len(logTail) > logTailMaxBytes {
+		logTail = logTail[len(logTail)-logTailMaxBytes:]
+	}
+
+	tx, err := s.db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	var serviceID string
+	err = tx.QueryRowContext(ctx,
+		`SELECT service_id FROM deployments WHERE id = ?`, id,
+	).Scan(&serviceID)
+	if err == sql.ErrNoRows {
+		return deploykit.Errorf(deploykit.ENOTFOUND, "Deployment not found.")
+	} else if err != nil {
+		return fmt.Errorf("looking up deployment %s: %w", id, err)
+	}
+
+	var exitCodeArg any
+	if exitCode != nil {
+		exitCodeArg = *exitCode
+	}
+	var logTailArg any
+	if logTail != "" {
+		logTailArg = logTail
+	}
+
+	_, err = tx.ExecContext(ctx,
+		`UPDATE deployments SET status = ?, failure_reason = ?, exit_code = ?, log_tail = ? WHERE id = ?`,
+		deploykit.DeploymentStatusFailed, reason, exitCodeArg, logTailArg, id,
+	)
+	if err != nil {
+		return fmt.Errorf("marking deployment failed: %w", err)
+	}
+
+	// If the service has no other healthy deployment to fall back on, flip
+	// service status to "failed" too. Otherwise the prior healthy keeps
+	// serving and we leave service.status alone.
+	var hasHealthy bool
+	err = tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM deployments WHERE service_id = ? AND status = ?)`,
+		serviceID, deploykit.DeploymentStatusHealthy,
+	).Scan(&hasHealthy)
+	if err != nil {
+		return fmt.Errorf("checking for healthy deployments: %w", err)
+	}
+	if !hasHealthy {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE services SET status = ?, updated_at = ? WHERE id = ?`,
+			deploykit.ServiceStatusFailed, time.Now().UTC().Format(timeFormat), serviceID,
+		)
+		if err != nil {
+			return fmt.Errorf("flipping service status to failed: %w", err)
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (s *DeploymentService) IncrementDeploymentAttempt(ctx context.Context, id string) (int, error) {
+	tx, err := s.db.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("beginning transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE deployments SET attempt_count = attempt_count + 1 WHERE id = ?`, id,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("incrementing attempt for %s: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return 0, deploykit.Errorf(deploykit.ENOTFOUND, "Deployment not found.")
+	}
+
+	var newCount int
+	if err := tx.QueryRowContext(ctx, `SELECT attempt_count FROM deployments WHERE id = ?`, id).Scan(&newCount); err != nil {
+		return 0, fmt.Errorf("reading back attempt_count: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("committing attempt increment: %w", err)
+	}
+	return newCount, nil
 }
 
 func (s *DeploymentService) RollbackService(ctx context.Context, serviceID string, deploymentID string) (*deploykit.Service, error) {
@@ -242,8 +544,35 @@ func (s *DeploymentService) RollbackService(ctx context.Context, serviceID strin
 		return nil, deploykit.Errorf(deploykit.EINVALID, "Deployment does not belong to this service.")
 	}
 
-	// Update the service's active deployment and status.
+	var priorActive sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		`SELECT active_deployment_id FROM services WHERE id = ?`, serviceID,
+	).Scan(&priorActive); err != nil {
+		return nil, fmt.Errorf("looking up service: %w", err)
+	}
+
 	now := time.Now().UTC().Format(timeFormat)
+
+	// The rolled-back-to deployment becomes healthy again.
+	_, err = tx.ExecContext(ctx,
+		`UPDATE deployments SET status = ?, healthy_at = COALESCE(healthy_at, ?) WHERE id = ?`,
+		deploykit.DeploymentStatusHealthy, now, deploymentID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("marking rollback target healthy: %w", err)
+	}
+
+	// The previously-active deployment is superseded (only if it was healthy).
+	if priorActive.Valid && priorActive.String != deploymentID {
+		_, err = tx.ExecContext(ctx,
+			`UPDATE deployments SET status = ? WHERE id = ? AND status = ?`,
+			deploykit.DeploymentStatusSuperseded, priorActive.String, deploykit.DeploymentStatusHealthy,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("superseding prior active deployment: %w", err)
+		}
+	}
+
 	_, err = tx.ExecContext(ctx,
 		`UPDATE services SET active_deployment_id = ?, status = ?, updated_at = ? WHERE id = ?`,
 		deploymentID, deploykit.ServiceStatusDeploying, now, serviceID,

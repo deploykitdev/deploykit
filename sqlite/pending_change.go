@@ -64,6 +64,14 @@ func (s *PendingChangeService) Append(ctx context.Context, projectID string, inp
 		return nil, fmt.Errorf("checking project %s: %w", projectID, err)
 	}
 
+	// Reject service-name collisions before they pollute the changelog. The
+	// applyEntry path already returns ECONFLICT on the UNIQUE constraint, but
+	// that fires inside the apply transaction and leaves the bad entry in the
+	// log — the user is then stuck until they manually delete the pending node.
+	if err := validateServiceNameForAppend(ctx, tx, projectID, input); err != nil {
+		return nil, err
+	}
+
 	var nextSeq int64
 	err = tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) + 1 FROM pending_changes WHERE project_id = ?`, projectID,
@@ -346,6 +354,143 @@ func (s *PendingChangeService) RemoveByID(ctx context.Context, projectID string,
 		return deploykit.Errorf(deploykit.ENOTFOUND, "Pending change not found.")
 	}
 	return nil
+}
+
+// validateServiceNameForAppend rejects a service.create or service.update
+// (rename) that would collide with an existing service or a name already
+// claimed by another pending change. Comparison is case-insensitive — the
+// SQLite UNIQUE constraint is case-sensitive, so this is the layer that
+// enforces "MySQL" and "mysql" as the same name.
+func validateServiceNameForAppend(ctx context.Context, tx *sql.Tx, projectID string, input deploykit.PendingChangeInput) error {
+	var proposedName string
+	var ownerID string // empty for create; real service ID for rename (lets self-rename pass)
+
+	switch input.Op {
+	case deploykit.PendingOpServiceCreate:
+		var p deploykit.ServiceCreatePayload
+		if err := json.Unmarshal(input.Payload, &p); err != nil {
+			return fmt.Errorf("decoding service.create payload: %w", err)
+		}
+		if p.Name == "" {
+			return nil // applyEntry's own EINVALID check handles empty
+		}
+		proposedName = p.Name
+
+	case deploykit.PendingOpServiceUpdate:
+		var p deploykit.ServiceUpdatePayload
+		if err := json.Unmarshal(input.Payload, &p); err != nil {
+			return fmt.Errorf("decoding service.update payload: %w", err)
+		}
+		if p.Name == nil || *p.Name == "" {
+			return nil
+		}
+		if input.TargetID == nil {
+			return nil // resolved later via temp-id mapping; nothing to compare against here
+		}
+		proposedName = *p.Name
+		ownerID = *input.TargetID
+
+	default:
+		return nil
+	}
+
+	names, err := loadEffectiveServiceNames(ctx, tx, projectID)
+	if err != nil {
+		return err
+	}
+	lower := strings.ToLower(proposedName)
+	if existingOwner, taken := names[lower]; taken && existingOwner != ownerID {
+		return deploykit.Errorf(deploykit.ECONFLICT, "A service named %q already exists in the project.", proposedName)
+	}
+	return nil
+}
+
+// loadEffectiveServiceNames returns lowerName -> ownerKey for the project,
+// where ownerKey is the real service ID for applied services and the
+// target_temp_id for pending-create entries. The map reflects what the
+// services table will look like after every existing pending change is
+// applied: pending renames replace the old name with the new, pending
+// deletes free the old name. Other ops (env vars, project.update) are
+// ignored — they don't touch service names.
+func loadEffectiveServiceNames(ctx context.Context, tx *sql.Tx, projectID string) (map[string]string, error) {
+	names := make(map[string]string)
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT id, name FROM services WHERE project_id = ?`, projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading applied service names: %w", err)
+	}
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scanning service row: %w", err)
+		}
+		names[strings.ToLower(name)] = id
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating applied services: %w", err)
+	}
+
+	pcRows, err := tx.QueryContext(ctx,
+		`SELECT op, target_id, target_temp_id, payload
+		 FROM pending_changes WHERE project_id = ? ORDER BY seq ASC`,
+		projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading pending changes: %w", err)
+	}
+	defer pcRows.Close()
+	for pcRows.Next() {
+		var opStr, payload string
+		var targetID, targetTempID sql.NullString
+		if err := pcRows.Scan(&opStr, &targetID, &targetTempID, &payload); err != nil {
+			return nil, fmt.Errorf("scanning pending change: %w", err)
+		}
+		switch deploykit.PendingChangeOp(opStr) {
+		case deploykit.PendingOpServiceCreate:
+			var p deploykit.ServiceCreatePayload
+			if err := json.Unmarshal([]byte(payload), &p); err != nil {
+				continue
+			}
+			if p.Name == "" || !targetTempID.Valid {
+				continue
+			}
+			names[strings.ToLower(p.Name)] = targetTempID.String
+		case deploykit.PendingOpServiceUpdate:
+			var p deploykit.ServiceUpdatePayload
+			if err := json.Unmarshal([]byte(payload), &p); err != nil {
+				continue
+			}
+			if p.Name == nil || *p.Name == "" || !targetID.Valid {
+				continue
+			}
+			// Drop the rename target's previous name from the map (whatever it
+			// is now), then claim the new name under the same owner.
+			for k, owner := range names {
+				if owner == targetID.String {
+					delete(names, k)
+				}
+			}
+			names[strings.ToLower(*p.Name)] = targetID.String
+		case deploykit.PendingOpServiceDelete:
+			if !targetID.Valid {
+				continue
+			}
+			for k, owner := range names {
+				if owner == targetID.String {
+					delete(names, k)
+				}
+			}
+		}
+	}
+	if err := pcRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating pending changes: %w", err)
+	}
+
+	return names, nil
 }
 
 func (s *PendingChangeService) Apply(ctx context.Context, projectID string) (*deploykit.ApplyResult, error) {
@@ -769,34 +914,38 @@ func (s *PendingChangeService) applyEntry(
 }
 
 // refreshDeploymentInTx reproduces redeployServiceNoTrigger's behaviour inside
-// an open transaction. If the service has no active deployment, returns
-// (nil, nil) — first-time deploys happen through service.create, not here.
+// an open transaction. Snapshots the most recent live deployment (its image
+// and config) and inserts a new pending deployment with refreshed env vars.
+// Returns (nil, nil) if the service has never been deployed — first-time
+// deploys happen through service.create, not here.
 func (s *PendingChangeService) refreshDeploymentInTx(ctx context.Context, tx *sql.Tx, serviceID string) (*deploykit.Deployment, error) {
-	// Load active deployment for this service.
-	var activeDepID sql.NullString
 	var projectID string
 	if err := tx.QueryRowContext(ctx,
-		`SELECT project_id, active_deployment_id FROM services WHERE id = ?`, serviceID,
-	).Scan(&projectID, &activeDepID); err != nil {
+		`SELECT project_id FROM services WHERE id = ?`, serviceID,
+	).Scan(&projectID); err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("loading service %s: %w", serviceID, err)
 	}
-	if !activeDepID.Valid {
-		return nil, nil
-	}
 
-	// Pull the existing deployment snapshot fields.
+	// Pull the most recent live deployment to use as the snapshot base.
+	// "Live" excludes cancelled/failed so we don't re-deploy a known-bad
+	// image just because env vars changed.
 	var image string
 	var envRaw, portsRaw string
 	var resourcesRaw sql.NullString
 	var replicas int
-	if err := tx.QueryRowContext(ctx,
-		`SELECT image, env_vars, ports, resources, replicas FROM deployments WHERE id = ?`,
-		activeDepID.String,
-	).Scan(&image, &envRaw, &portsRaw, &resourcesRaw, &replicas); err != nil {
-		return nil, fmt.Errorf("loading deployment %s: %w", activeDepID.String, err)
+	err := tx.QueryRowContext(ctx,
+		`SELECT image, env_vars, ports, resources, replicas FROM deployments
+		 WHERE service_id = ? AND status NOT IN (?, ?)
+		 ORDER BY created_at DESC LIMIT 1`,
+		serviceID, deploykit.DeploymentStatusCancelled, deploykit.DeploymentStatusFailed,
+	).Scan(&image, &envRaw, &portsRaw, &resourcesRaw, &replicas)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("loading latest deployment for service %s: %w", serviceID, err)
 	}
 
 	var ports []deploykit.PortMapping
@@ -843,11 +992,14 @@ func markEnvVarAffected(ctx context.Context, tx *sql.Tx, projectID string, scope
 	case deploykit.EnvVarScopeService:
 		affected[scopeID] = true
 	case deploykit.EnvVarScopeGroup:
+		// "Has been deployed" = has any non-cancelled deployment. Cancelled
+		// deployments don't count because they were never picked up.
 		rows, err := tx.QueryContext(ctx,
 			`SELECT s.id FROM services s
 			 JOIN canvas_nodes cn ON cn.service_id = s.id
-			 WHERE cn.parent_id = ? AND s.active_deployment_id IS NOT NULL`,
-			scopeID,
+			 WHERE cn.parent_id = ?
+			   AND EXISTS(SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status != ?)`,
+			scopeID, deploykit.DeploymentStatusCancelled,
 		)
 		if err != nil {
 			return fmt.Errorf("listing group services: %w", err)
@@ -865,8 +1017,10 @@ func markEnvVarAffected(ctx context.Context, tx *sql.Tx, projectID string, scope
 		}
 	case deploykit.EnvVarScopeProject:
 		rows, err := tx.QueryContext(ctx,
-			`SELECT id FROM services WHERE project_id = ? AND active_deployment_id IS NOT NULL`,
-			projectID,
+			`SELECT s.id FROM services s
+			 WHERE s.project_id = ?
+			   AND EXISTS(SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status != ?)`,
+			projectID, deploykit.DeploymentStatusCancelled,
 		)
 		if err != nil {
 			return fmt.Errorf("listing project services: %w", err)
@@ -961,10 +1115,12 @@ func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, new
 	}
 
 	if projectScoped {
-		// Fan project-scope rewrites out to every active service in the project.
+		// Fan project-scope rewrites out to every deployed service in the project.
 		svcRows, err := tx.QueryContext(ctx,
-			`SELECT id FROM services WHERE project_id = ? AND active_deployment_id IS NOT NULL`,
-			projectID,
+			`SELECT s.id FROM services s
+			 WHERE s.project_id = ?
+			   AND EXISTS(SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status != ?)`,
+			projectID, deploykit.DeploymentStatusCancelled,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("listing project services: %w", err)
@@ -982,13 +1138,14 @@ func rewriteServiceRefs(ctx context.Context, tx *sql.Tx, projectID, oldName, new
 		}
 	}
 
-	// For each group whose vars were rewritten, fan out to its child services.
+	// For each group whose vars were rewritten, fan out to its deployed child services.
 	for groupID := range groupScopeIDs {
 		gRows, err := tx.QueryContext(ctx,
 			`SELECT s.id FROM services s
 			 JOIN canvas_nodes cn ON cn.service_id = s.id
-			 WHERE cn.parent_id = ? AND s.active_deployment_id IS NOT NULL`,
-			groupID,
+			 WHERE cn.parent_id = ?
+			   AND EXISTS(SELECT 1 FROM deployments d WHERE d.service_id = s.id AND d.status != ?)`,
+			groupID, deploykit.DeploymentStatusCancelled,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("listing group services: %w", err)
@@ -1077,25 +1234,47 @@ func createDeploymentInTx(ctx context.Context, tx *sql.Tx, serviceID string, cre
 		Ports:     ports,
 		Resources: create.Resources,
 		Replicas:  replicas,
+		Status:    deploykit.DeploymentStatusPending,
 		CreatedAt: time.Now().UTC(),
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO deployments (id, service_id, image, env_vars, ports, resources, replicas, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO deployments (id, service_id, image, env_vars, ports, resources, replicas, status, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		dep.ID, dep.ServiceID, dep.Image,
 		string(envJSON), string(portsJSON), resourcesArg,
-		dep.Replicas, dep.CreatedAt.Format(timeFormat),
+		dep.Replicas, dep.Status, dep.CreatedAt.Format(timeFormat),
 	); err != nil {
 		return nil, fmt.Errorf("inserting deployment: %w", err)
 	}
 
+	// Cancel prior in-flight deployments so the reconciler focuses on this one.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE services SET active_deployment_id = ?, status = ?, updated_at = ? WHERE id = ?`,
-		dep.ID, deploykit.ServiceStatusDeploying,
-		time.Now().UTC().Format(timeFormat), serviceID,
+		`UPDATE deployments SET status = ?
+		 WHERE service_id = ? AND id != ? AND status IN (?, ?)`,
+		deploykit.DeploymentStatusCancelled, serviceID, dep.ID,
+		deploykit.DeploymentStatusPending, deploykit.DeploymentStatusStarting,
 	); err != nil {
-		return nil, fmt.Errorf("activating deployment on service: %w", err)
+		return nil, fmt.Errorf("cancelling prior in-flight deployments: %w", err)
+	}
+
+	// First-deploy UX: surface "deploying" only when the service has no active
+	// deployment yet. Subsequent redeploys leave service.status alone — the
+	// prior healthy deployment is still serving traffic.
+	var activeDepID sql.NullString
+	if err := tx.QueryRowContext(ctx,
+		`SELECT active_deployment_id FROM services WHERE id = ?`, serviceID,
+	).Scan(&activeDepID); err != nil {
+		return nil, fmt.Errorf("looking up service: %w", err)
+	}
+	if !activeDepID.Valid {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE services SET status = ?, updated_at = ? WHERE id = ?`,
+			deploykit.ServiceStatusDeploying,
+			time.Now().UTC().Format(timeFormat), serviceID,
+		); err != nil {
+			return nil, fmt.Errorf("setting service status: %w", err)
+		}
 	}
 
 	return dep, nil

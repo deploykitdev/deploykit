@@ -14,7 +14,10 @@ import { toast } from "sonner";
 import { useCanvasSync } from "@/lib/use-canvas-sync";
 import { CanvasLoader } from "./canvas-loader";
 import { usePendingChanges, useProjectServices, type Service } from "@/lib/queries";
-import { collectServiceOverrides } from "@/lib/pending-changes-diff";
+import {
+  collectServiceOverrides,
+  collectTakenServiceNames,
+} from "@/lib/pending-changes-diff";
 import { CursorOverlay } from "./cursor-overlay";
 import { AvatarStack } from "./avatar-stack";
 import { CanvasContextMenu } from "./canvas-context-menu";
@@ -81,6 +84,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     cancelServiceDraft,
     submitServiceDraft,
     moveLocalDraft,
+    setLocalDraftMeasured,
     deleteNode,
     addNote,
     commitNote,
@@ -106,6 +110,13 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     [pendingChanges],
   );
 
+  // Lowercased name set the create-service form blocks against. Mirrors the
+  // backend's stage-time check so submit is disabled before the WS round-trip.
+  const takenServiceNames = useMemo(
+    () => collectTakenServiceNames(servicesData, pendingChanges),
+    [servicesData, pendingChanges],
+  );
+
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => {
       const passthrough: NodeChange[] = [];
@@ -124,6 +135,24 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
           );
           continue;
         }
+        // The prefill draft has auto height, so RF needs the ResizeObserver
+        // measurement to mark it dimensioned and flip visibility from hidden.
+        // Drafts aren't in the source nodes state, so route the dimensions
+        // back into localDrafts and let composedNodes inject `measured` on
+        // the next render.
+        if (
+          change.type === "dimensions" &&
+          "id" in change &&
+          typeof change.id === "string" &&
+          change.id.startsWith("draft-") &&
+          change.dimensions
+        ) {
+          setLocalDraftMeasured(
+            change.id.slice("draft-".length),
+            change.dimensions,
+          );
+          continue;
+        }
         // Drop other change types for virtual draft/ghost nodes so
         // applyNodeChanges doesn't thrash the source nodes state.
         if (
@@ -137,7 +166,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       }
       if (passthrough.length > 0) onNodesChange(passthrough);
     },
-    [onNodesChange, moveLocalDraft],
+    [onNodesChange, moveLocalDraft, setLocalDraftMeasured],
   );
 
   const { screenToFlowPosition, getNodes, getViewport, setCenter } =
@@ -539,6 +568,14 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
     }
     for (const [, draft] of localDrafts) {
       const hasPrefill = !!draft.prefill;
+      // Carry the latest ResizeObserver measurement back onto the node so RF
+      // marks it dimensioned. Without this, the prefill variant (which has
+      // no fixed height) keeps `visibility: hidden` once a position update
+      // re-creates the user node and resets internal measurement state.
+      const measured =
+        draft.measuredWidth !== undefined && draft.measuredHeight !== undefined
+          ? { width: draft.measuredWidth, height: draft.measuredHeight }
+          : undefined;
       extras.push({
         id: `draft-${draft.draftId}`,
         type: "service-draft",
@@ -548,12 +585,14 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
           isSubmitting: draft.isSubmitting,
           errorMessage: draft.errorMessage,
           prefill: draft.prefill,
+          takenNames: takenServiceNames,
           onSubmit: submitServiceDraft,
           onCancel: cancelServiceDraft,
         },
         selectable: false,
         dragHandle: ".service-draft-drag-handle",
         initialWidth: DRAFT_NODE_WIDTH,
+        ...(measured ? { measured } : {}),
         // Height is auto when a prefill (with env vars) is present; React
         // Flow measures the rendered node so the form can grow.
         ...(hasPrefill
@@ -565,7 +604,7 @@ function ProjectFlowInner({ projectId }: ProjectFlowProps) {
       });
     }
     return [...decoratedNodes, ...extras];
-  }, [decoratedNodes, remoteDrafts, localDrafts, submitServiceDraft, cancelServiceDraft]);
+  }, [decoratedNodes, remoteDrafts, localDrafts, takenServiceNames, submitServiceDraft, cancelServiceDraft]);
 
   // Surface disconnect + auto-reconnect attempts so users aren't left staring
   // at a canvas that has silently stopped syncing. Only fire the disconnect

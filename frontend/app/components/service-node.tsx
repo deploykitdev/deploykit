@@ -187,7 +187,16 @@ export function ServiceNode({ data, selected }: NodeProps) {
         </code>
       </div>
 
-      <div className="relative flex items-center gap-3 border-t border-dashed border-border/70 px-5 py-3">
+      <div
+        className="relative flex items-center gap-3 border-t border-dashed border-border/70 px-5 py-3"
+        title={
+          key === "degraded"
+            ? "Containers are restarting unexpectedly. Check the deployments tab for details."
+            : key === "failed"
+              ? "Last deployment failed. Check the deployments tab for details."
+              : undefined
+        }
+      >
         <span className="relative flex size-2 items-center justify-center">
           <span
             className={cn("block size-2 rounded-full", meta.dot)}

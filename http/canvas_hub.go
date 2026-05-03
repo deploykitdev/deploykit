@@ -158,6 +158,12 @@ func translateBusEvent(evt deploykit.Event) ([]byte, bool) {
 		msgType = "service:deleted"
 	case deploykit.EventDeploymentCreated:
 		msgType = "deployment:created"
+	case deploykit.EventDeploymentStarting:
+		msgType = "deployment:starting"
+	case deploykit.EventDeploymentHealthy:
+		msgType = "deployment:healthy"
+	case deploykit.EventDeploymentFailed:
+		msgType = "deployment:failed"
 	case deploykit.EventContainerCreated:
 		msgType = "container:created"
 	case deploykit.EventContainerDeleted:

@@ -1,6 +1,9 @@
 package deploykit
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // NetworkPrefix is prepended to project slugs when creating Docker networks.
 const NetworkPrefix = "dk-"
@@ -39,6 +42,18 @@ type RunningContainer struct {
 	State        string
 }
 
+// ContainerInspection is a runtime snapshot used by the reconciler's readiness
+// gate. State is one of "running", "exited", "restarting", "created", "paused",
+// "dead". ExitCode is meaningful only when State == "exited".
+type ContainerInspection struct {
+	State        string
+	RestartCount int
+	ExitCode     *int
+	StartedAt    time.Time
+	FinishedAt   *time.Time
+	Labels       map[string]string
+}
+
 // Provisioner manages infrastructure resources (networks, containers, images)
 // backing DeployKit projects.
 type Provisioner interface {
@@ -68,6 +83,15 @@ type Provisioner interface {
 
 	// ListContainers returns all containers labelled as managed by DeployKit.
 	ListContainers(ctx context.Context) ([]RunningContainer, error)
+
+	// InspectContainer returns a runtime snapshot of one container, used by
+	// the reconciler's readiness gate to detect crashloops.
+	InspectContainer(ctx context.Context, dockerID string) (*ContainerInspection, error)
+
+	// GetContainerLogTail returns the last n lines of a container's combined
+	// stdout/stderr as a single string. Used to capture failure context when
+	// a deployment is marked failed. Does not follow.
+	GetContainerLogTail(ctx context.Context, dockerID string, lines int) (string, error)
 }
 
 // NetworkName returns the DeployKit network name for a project.

@@ -1,6 +1,12 @@
 import { useState } from "react";
-import { ChevronDownIcon, GitBranchIcon, MoreVerticalIcon } from "lucide-react";
-import type { Deployment } from "@/lib/queries";
+import {
+  AlertCircleIcon,
+  ChevronDownIcon,
+  GitBranchIcon,
+  Loader2Icon,
+  MoreVerticalIcon,
+} from "lucide-react";
+import type { Deployment, DeploymentStatus } from "@/lib/queries";
 
 interface ServiceDeploymentsTabProps {
   deployments: Deployment[] | undefined;
@@ -60,14 +66,32 @@ export function ServiceDeploymentsTab({
     );
   }
 
+  // The reconciler-promoted "active" deployment (status=healthy, pointed at by
+  // services.active_deployment_id) is the one currently serving. It may not be
+  // the most recent — a pending/starting/failed deployment is shown above it
+  // as in-flight, but doesn't replace it until promotion.
   const active = activeDeploymentId
     ? list.find((d) => d.id === activeDeploymentId) ?? null
     : null;
-  const history = list.filter((d) => d.id !== active?.id);
+
+  const inFlight = list.filter(
+    (d) =>
+      d.id !== active?.id &&
+      (d.status === "pending" ||
+        d.status === "starting" ||
+        d.status === "failed"),
+  );
+  const history = list.filter(
+    (d) => d.id !== active?.id && !inFlight.includes(d),
+  );
 
   return (
     <div className="flex flex-col gap-4">
-      {active ? <DeploymentRow deployment={active} status="active" /> : null}
+      {inFlight.map((d) => (
+        <DeploymentRow key={d.id} deployment={d} active={false} />
+      ))}
+
+      {active ? <DeploymentRow deployment={active} active={true} /> : null}
 
       {history.length > 0 ? (
         <div className="flex flex-col gap-2">
@@ -87,7 +111,7 @@ export function ServiceDeploymentsTab({
           {historyOpen ? (
             <div className="flex flex-col gap-2">
               {history.map((d) => (
-                <DeploymentRow key={d.id} deployment={d} status="inactive" />
+                <DeploymentRow key={d.id} deployment={d} active={false} />
               ))}
             </div>
           ) : null}
@@ -97,42 +121,91 @@ export function ServiceDeploymentsTab({
   );
 }
 
+function statusPillClasses(status: DeploymentStatus, active: boolean): string {
+  if (active) return "bg-emerald-500/20 text-emerald-300";
+  switch (status) {
+    case "starting":
+    case "pending":
+      return "bg-blue-500/20 text-blue-300";
+    case "failed":
+      return "bg-red-500/20 text-red-300";
+    case "cancelled":
+      return "bg-muted text-muted-foreground line-through";
+    case "superseded":
+    case "healthy":
+    default:
+      return "bg-muted text-muted-foreground";
+  }
+}
+
+function statusLabel(status: DeploymentStatus, active: boolean): string {
+  if (active) return "Active";
+  switch (status) {
+    case "pending":
+      return "Pending";
+    case "starting":
+      return "Starting";
+    case "healthy":
+      return "Healthy";
+    case "failed":
+      return "Failed";
+    case "superseded":
+      return "Superseded";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return status;
+  }
+}
+
 function DeploymentRow({
   deployment,
-  status,
+  active,
 }: {
   deployment: Deployment;
-  status: "active" | "inactive";
+  active: boolean;
 }) {
-  const isActive = status === "active";
+  const isFailed = deployment.status === "failed";
+  const isInFlight =
+    deployment.status === "pending" || deployment.status === "starting";
+
   return (
     <div
       className={
         "rounded-lg border p-3 " +
-        (isActive
+        (active
           ? "border-emerald-500/40 bg-emerald-500/5"
-          : "bg-card hover:bg-muted/40")
+          : isFailed
+            ? "border-red-500/40 bg-red-500/5"
+            : "bg-card hover:bg-muted/40")
       }
     >
       <div className="flex items-center gap-3">
         <span
           className={
             "rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
-            (isActive
-              ? "bg-emerald-500/20 text-emerald-300"
-              : "bg-muted text-muted-foreground")
+            statusPillClasses(deployment.status, active)
           }
         >
-          {isActive ? "Active" : "Inactive"}
+          {statusLabel(deployment.status, active)}
         </span>
-        <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
+        {isInFlight ? (
+          <Loader2Icon className="size-4 shrink-0 animate-spin text-blue-400" />
+        ) : isFailed ? (
+          <AlertCircleIcon className="size-4 shrink-0 text-red-400" />
+        ) : (
+          <GitBranchIcon className="size-4 shrink-0 text-muted-foreground" />
+        )}
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-medium">{deployment.image}</div>
           <div className="text-xs text-muted-foreground">
             {timeAgo(deployment.created_at)}
+            {deployment.attempt_count > 1 && isFailed
+              ? ` · ${deployment.attempt_count} attempts`
+              : null}
           </div>
         </div>
-        {isActive ? (
+        {active ? (
           <button
             type="button"
             disabled
@@ -150,6 +223,27 @@ function DeploymentRow({
           <MoreVerticalIcon className="size-4" />
         </button>
       </div>
+      {isFailed ? (
+        <div className="mt-2 space-y-1.5 rounded bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
+          {deployment.failure_reason ? (
+            <div className="font-medium">{deployment.failure_reason}</div>
+          ) : null}
+          {typeof deployment.exit_code === "number" ? (
+            <div className="text-red-300/80">
+              Exit code: <span className="font-mono">{deployment.exit_code}</span>
+            </div>
+          ) : null}
+          {deployment.log_tail ? (
+            <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-black/40 p-2 font-mono text-[11px] leading-snug text-red-100">
+              {deployment.log_tail}
+            </pre>
+          ) : (
+            <div className="text-red-300/60 italic">
+              (no logs — container never started)
+            </div>
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

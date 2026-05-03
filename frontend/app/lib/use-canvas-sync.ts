@@ -87,6 +87,12 @@ export interface LocalServiceDraft {
   isSubmitting: boolean;
   errorMessage: string | null;
   prefill?: ServiceDraftPrefill;
+  // Latest dimensions reported by React Flow's ResizeObserver. Drafts live
+  // outside the source `nodes` state, so applyNodeChanges can't store the
+  // measurement for us — without this, RF keeps the node `visibility: hidden`
+  // and the prefill variant disappears mid-drag.
+  measuredWidth?: number;
+  measuredHeight?: number;
 }
 
 function toFlowNode(dbNode: CanvasNode): Node {
@@ -602,30 +608,43 @@ export function useCanvasSync(projectId: string) {
     ws.on<{ deployment: Deployment }>(
       "deployment:created",
       ({ deployment }) => {
-        // CreateDeployment transitions the service to "deploying" in the DB,
-        // so mirror that here to avoid a gap until the reconciler catches up.
-        const patch = (s: Service): Service => ({
-          ...s,
-          status: "deploying",
-          active_deployment_id: deployment.id,
-          active_deployment: deployment,
-        });
-        queryClient.setQueryData<Service>(
-          queryKeys.service(projectId, deployment.service_id),
-          (prev) => (prev ? patch(prev) : prev),
-        );
-        queryClient.setQueryData<Service[]>(
-          queryKeys.projectServices(projectId),
-          (prev) =>
-            prev
-              ? prev.map((s) => (s.id === deployment.service_id ? patch(s) : s))
-              : prev,
-        );
+        // The reconciler now owns active_deployment_id — it only flips when a
+        // deployment becomes healthy. Just refresh the deployments list so the
+        // new pending row shows up; service.status follows on the next event.
         queryClient.invalidateQueries({
           queryKey: queryKeys.deployments(projectId, deployment.service_id),
         });
       },
     );
+
+    type DeploymentStatusEvent = {
+      deployment_id: string;
+      service_id: string;
+      status: string;
+      failure_reason?: string | null;
+      attempt_count?: number;
+    };
+
+    const onDeploymentStatusEvent = (
+      msg: DeploymentStatusEvent,
+    ) => {
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.deployments(projectId, msg.service_id),
+      });
+      // Healthy events flip active_deployment_id on the service — refresh it.
+      if (msg.status === "healthy") {
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.service(projectId, msg.service_id),
+        });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.projectServices(projectId),
+        });
+      }
+    };
+
+    ws.on<DeploymentStatusEvent>("deployment:starting", onDeploymentStatusEvent);
+    ws.on<DeploymentStatusEvent>("deployment:healthy", onDeploymentStatusEvent);
+    ws.on<DeploymentStatusEvent>("deployment:failed", onDeploymentStatusEvent);
 
     const unsubscribeStatus = ws.onStatusChange((status) => {
       // On reconnect (reconnecting → connected) resync service queries in case
@@ -930,6 +949,29 @@ export function useCanvasSync(projectId: string) {
     [],
   );
 
+  const setLocalDraftMeasured = useCallback(
+    (draftId: string, dimensions: { width: number; height: number }) => {
+      setLocalDrafts((prev) => {
+        const existing = prev.get(draftId);
+        if (!existing) return prev;
+        if (
+          existing.measuredWidth === dimensions.width &&
+          existing.measuredHeight === dimensions.height
+        ) {
+          return prev;
+        }
+        const next = new Map(prev);
+        next.set(draftId, {
+          ...existing,
+          measuredWidth: dimensions.width,
+          measuredHeight: dimensions.height,
+        });
+        return next;
+      });
+    },
+    [],
+  );
+
   // Snapshot keyed by draft ID so submitServiceDraft can read position without
   // touching setLocalDrafts — updater functions run twice under StrictMode and
   // side effects inside them would double-fire the WS send.
@@ -995,6 +1037,7 @@ export function useCanvasSync(projectId: string) {
     cancelServiceDraft,
     submitServiceDraft,
     moveLocalDraft,
+    setLocalDraftMeasured,
     deleteNode,
     addNote,
     commitNote,

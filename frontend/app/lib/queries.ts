@@ -28,6 +28,14 @@ export interface ResourceLimits {
   memory_mb?: number;
 }
 
+export type DeploymentStatus =
+  | "pending"
+  | "starting"
+  | "healthy"
+  | "failed"
+  | "superseded"
+  | "cancelled";
+
 export interface Deployment {
   id: string;
   service_id: string;
@@ -36,6 +44,13 @@ export interface Deployment {
   ports: PortMapping[] | null;
   resources?: ResourceLimits | null;
   replicas: number;
+  status: DeploymentStatus;
+  failure_reason?: string | null;
+  exit_code?: number | null;
+  log_tail?: string | null;
+  attempt_count: number;
+  started_at?: string | null;
+  healthy_at?: string | null;
   created_at: string;
 }
 

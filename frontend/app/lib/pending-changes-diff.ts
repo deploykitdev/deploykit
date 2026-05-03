@@ -91,6 +91,47 @@ export function collectServiceOverrides(
   return out;
 }
 
+// collectTakenServiceNames returns the lowercased set of service names that
+// would conflict with a new service-create or rename in this project, mirroring
+// the backend's stage-time check in PendingChangeService.Append. Pending
+// renames replace the old name with the new; pending deletes free the old
+// name. The owner ID `excludeOwner` (if provided) lets a self-rename pass —
+// the form passes it when editing an existing service.
+export function collectTakenServiceNames(
+  services: Service[] | undefined,
+  changes: PendingChange[] | undefined,
+  excludeOwner?: string,
+): Set<string> {
+  // Build owner -> currentName so renames/deletes can find what to free.
+  const nameByOwner = new Map<string, string>();
+  for (const s of services ?? []) {
+    nameByOwner.set(s.id, s.name);
+  }
+
+  for (const c of changes ?? []) {
+    if (c.op === "service.create" && c.target_temp_id) {
+      const p = parsePayload(c.payload);
+      if (typeof p.name === "string" && p.name !== "") {
+        nameByOwner.set(c.target_temp_id, p.name);
+      }
+    } else if (c.op === "service.update" && c.target_id) {
+      const p = parsePayload(c.payload);
+      if (typeof p.name === "string" && p.name !== "") {
+        nameByOwner.set(c.target_id, p.name);
+      }
+    } else if (c.op === "service.delete" && c.target_id) {
+      nameByOwner.delete(c.target_id);
+    }
+  }
+
+  const taken = new Set<string>();
+  for (const [owner, name] of nameByOwner) {
+    if (owner === excludeOwner) continue;
+    taken.add(name.toLowerCase());
+  }
+  return taken;
+}
+
 // collectServiceOverride is the single-service variant used by side panels
 // that only care about one target.
 export function collectServiceOverride(

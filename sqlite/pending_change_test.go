@@ -196,8 +196,11 @@ func TestPendingChangeService_Apply_ServiceCreateWithEnvVar(t *testing.T) {
 	if svcRec.Name != "web" {
 		t.Errorf("service name: got %q", svcRec.Name)
 	}
-	if svcRec.ActiveDeploymentID == nil {
-		t.Error("active deployment not set")
+	// active_deployment_id is now flipped by the reconciler when the deployment
+	// becomes healthy, not on create. Service status should still be "deploying"
+	// for first deploy.
+	if svcRec.Status != deploykit.ServiceStatusDeploying {
+		t.Errorf("service status: got %q, want %q", svcRec.Status, deploykit.ServiceStatusDeploying)
 	}
 
 	envs, err := envSvc.ListEnvVars(ctx, deploykit.EnvVarScopeService, realID)
@@ -622,6 +625,166 @@ func TestPendingChangeService_DiscardAll_CleansUpPendingCreatedNodes(t *testing.
 }
 
 func strPtr(s string) *string { return &s }
+
+// TestPendingChangeService_Append_RejectsServiceNameCollision exercises the
+// stage-time guard that prevents duplicate service names from sitting in the
+// changelog and blowing up at Apply. Comparison is case-insensitive; pending
+// renames and deletes are taken into account when computing the effective
+// name set.
+func TestPendingChangeService_Append_RejectsServiceNameCollision(t *testing.T) {
+	ctx := context.Background()
+
+	stageCreate := func(t *testing.T, svc *sqlite.PendingChangeService, projectID, tempID, name string) error {
+		t.Helper()
+		payload, _ := json.Marshal(deploykit.ServiceCreatePayload{Name: name, Image: "nginx"})
+		_, err := svc.Append(ctx, projectID, deploykit.PendingChangeInput{
+			Op:           deploykit.PendingOpServiceCreate,
+			TargetType:   deploykit.PendingTargetService,
+			TargetTempID: &tempID,
+			Payload:      payload,
+		})
+		return err
+	}
+	stageRename := func(t *testing.T, svc *sqlite.PendingChangeService, projectID, serviceID, newName string) error {
+		t.Helper()
+		payload, _ := json.Marshal(deploykit.ServiceUpdatePayload{Name: strPtr(newName)})
+		_, err := svc.Append(ctx, projectID, deploykit.PendingChangeInput{
+			Op:         deploykit.PendingOpServiceUpdate,
+			TargetType: deploykit.PendingTargetService,
+			TargetID:   &serviceID,
+			Payload:    payload,
+		})
+		return err
+	}
+	stageDelete := func(t *testing.T, svc *sqlite.PendingChangeService, projectID, serviceID string) error {
+		t.Helper()
+		_, err := svc.Append(ctx, projectID, deploykit.PendingChangeInput{
+			Op:         deploykit.PendingOpServiceDelete,
+			TargetType: deploykit.PendingTargetService,
+			TargetID:   &serviceID,
+			Payload:    json.RawMessage(`{}`),
+		})
+		return err
+	}
+
+	t.Run("create collides with applied service", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		svcSvc := sqlite.NewServiceService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		if _, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "mysql"}); err != nil {
+			t.Fatal(err)
+		}
+
+		err := stageCreate(t, svc, proj.ID, "node-new", "mysql")
+		if deploykit.ErrorCode(err) != deploykit.ECONFLICT {
+			t.Fatalf("expected ECONFLICT, got %v", err)
+		}
+	})
+
+	t.Run("create collides case-insensitively", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		svcSvc := sqlite.NewServiceService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		if _, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "mysql"}); err != nil {
+			t.Fatal(err)
+		}
+
+		err := stageCreate(t, svc, proj.ID, "node-new", "MySQL")
+		if deploykit.ErrorCode(err) != deploykit.ECONFLICT {
+			t.Fatalf("expected ECONFLICT for MySQL vs mysql, got %v", err)
+		}
+	})
+
+	t.Run("create collides with pending create", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		if err := stageCreate(t, svc, proj.ID, "node-a", "mysql"); err != nil {
+			t.Fatal(err)
+		}
+		err := stageCreate(t, svc, proj.ID, "node-b", "mysql")
+		if deploykit.ErrorCode(err) != deploykit.ECONFLICT {
+			t.Fatalf("expected ECONFLICT for second pending create, got %v", err)
+		}
+	})
+
+	t.Run("create allowed after staged delete frees the name", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		svcSvc := sqlite.NewServiceService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		existing, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "mysql"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stageDelete(t, svc, proj.ID, existing.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := stageCreate(t, svc, proj.ID, "node-new", "mysql"); err != nil {
+			t.Fatalf("create should be allowed after staged delete frees the name, got: %v", err)
+		}
+	})
+
+	t.Run("rename collides with another applied service", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		svcSvc := sqlite.NewServiceService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		if _, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "mysql"}); err != nil {
+			t.Fatal(err)
+		}
+		api, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "api"})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = stageRename(t, svc, proj.ID, api.ID, "mysql")
+		if deploykit.ErrorCode(err) != deploykit.ECONFLICT {
+			t.Fatalf("expected ECONFLICT for rename collision, got %v", err)
+		}
+	})
+
+	t.Run("self-rename to current name is not a collision", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		svcSvc := sqlite.NewServiceService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		api, err := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "api"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stageRename(t, svc, proj.ID, api.ID, "api"); err != nil {
+			t.Errorf("self-rename should be allowed, got: %v", err)
+		}
+	})
+
+	t.Run("rename allowed when prior staged rename freed the target name", func(t *testing.T) {
+		db := sqlite.MustOpenDB(t)
+		svc := sqlite.NewPendingChangeService(db)
+		svcSvc := sqlite.NewServiceService(db)
+		proj := sqlite.MustCreateProject(t, sqlite.NewProjectService(db), "proj")
+
+		oldMysql, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "mysql"})
+		api, _ := svcSvc.CreateService(ctx, proj.ID, deploykit.ServiceCreate{Name: "api"})
+
+		// First stage: rename existing mysql -> mysql-old (frees "mysql").
+		if err := stageRename(t, svc, proj.ID, oldMysql.ID, "mysql-old"); err != nil {
+			t.Fatal(err)
+		}
+		// Now api can be renamed to mysql.
+		if err := stageRename(t, svc, proj.ID, api.ID, "mysql"); err != nil {
+			t.Errorf("rename should be allowed after prior rename freed the name, got: %v", err)
+		}
+	})
+}
 
 // TestPendingChangeService_Apply_EnvRefAutoEdges exercises the env-ref →
 // auto-edge sync end to end: applying a pending env var that references

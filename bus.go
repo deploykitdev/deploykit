@@ -16,6 +16,9 @@ const (
 	EventContainerCreated     EventType = "container.created"
 	EventContainerDeleted     EventType = "container.deleted"
 	EventDeploymentCreated    EventType = "deployment.created"
+	EventDeploymentStarting   EventType = "deployment.starting"
+	EventDeploymentHealthy    EventType = "deployment.healthy"
+	EventDeploymentFailed     EventType = "deployment.failed"
 )
 
 // Event is a single message broadcast on the EventBus.
@@ -77,4 +80,14 @@ type ContainerDeletedPayload struct {
 
 type DeploymentCreatedPayload struct {
 	Deployment *Deployment `json:"deployment"`
+}
+
+// DeploymentStatusPayload covers deployment.starting / .healthy / .failed.
+// FailureReason is set only for failed; AttemptCount is set for failed.
+type DeploymentStatusPayload struct {
+	DeploymentID  string  `json:"deployment_id"`
+	ServiceID     string  `json:"service_id"`
+	Status        string  `json:"status"`
+	FailureReason *string `json:"failure_reason,omitempty"`
+	AttemptCount  int     `json:"attempt_count,omitempty"`
 }

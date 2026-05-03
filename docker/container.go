@@ -1,17 +1,20 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/containerd/errdefs"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
 	"github.com/deploykitdev/deploykit"
 )
@@ -131,6 +134,87 @@ func (c *Client) StopAndRemoveContainer(ctx context.Context, dockerID string) er
 
 	c.logger.Info("container removed", "id", dockerID)
 	return nil
+}
+
+// InspectContainer returns a runtime snapshot for the readiness gate.
+func (c *Client) InspectContainer(ctx context.Context, dockerID string) (*deploykit.ContainerInspection, error) {
+	info, err := c.cli.ContainerInspect(ctx, dockerID)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, fmt.Errorf("container %s not found: %w", dockerID, err)
+		}
+		return nil, fmt.Errorf("inspecting container %s: %w", dockerID, err)
+	}
+
+	out := &deploykit.ContainerInspection{
+		Labels: map[string]string{},
+	}
+	if info.Config != nil {
+		for k, v := range info.Config.Labels {
+			out.Labels[k] = v
+		}
+	}
+	if info.State != nil {
+		out.State = info.State.Status
+		out.RestartCount = info.RestartCount
+		if info.State.Status == "exited" || info.State.Status == "dead" {
+			ec := info.State.ExitCode
+			out.ExitCode = &ec
+		}
+		if info.State.StartedAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, info.State.StartedAt); err == nil {
+				out.StartedAt = t
+			}
+		}
+		if info.State.FinishedAt != "" && info.State.FinishedAt != "0001-01-01T00:00:00Z" {
+			if t, err := time.Parse(time.RFC3339Nano, info.State.FinishedAt); err == nil {
+				out.FinishedAt = &t
+			}
+		}
+	}
+	return out, nil
+}
+
+// GetContainerLogTail returns the last `lines` lines of a container's combined
+// stdout/stderr as a single newline-joined string. Does not follow.
+func (c *Client) GetContainerLogTail(ctx context.Context, dockerID string, lines int) (string, error) {
+	if lines <= 0 {
+		lines = 50
+	}
+	rc, err := c.cli.ContainerLogs(ctx, dockerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     false,
+		Tail:       strconv.Itoa(lines),
+	})
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("opening logs for %s: %w", dockerID, err)
+	}
+	defer rc.Close()
+
+	// Inspect to decide whether the stream is multiplexed (non-tty) or raw (tty).
+	info, err := c.cli.ContainerInspect(ctx, dockerID)
+	if err != nil {
+		return "", fmt.Errorf("inspecting %s for log demux: %w", dockerID, err)
+	}
+
+	var buf bytes.Buffer
+	if info.Config != nil && info.Config.Tty {
+		if _, err := io.Copy(&buf, rc); err != nil {
+			return "", fmt.Errorf("reading tty logs for %s: %w", dockerID, err)
+		}
+	} else {
+		// Multiplexed; demux into a single buffer (we don't care about stream
+		// origin for failure capture).
+		if _, err := stdcopy.StdCopy(&buf, &buf, rc); err != nil && err != io.EOF {
+			return "", fmt.Errorf("demuxing logs for %s: %w", dockerID, err)
+		}
+	}
+
+	return strings.TrimRight(buf.String(), "\n\r"), nil
 }
 
 // ListContainers returns all containers labelled as managed by DeployKit.

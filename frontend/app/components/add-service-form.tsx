@@ -10,6 +10,9 @@ export interface AddServiceFormData extends Record<string, unknown> {
   isSubmitting: boolean;
   errorMessage: string | null;
   prefill?: ServiceDraftPrefill;
+  // Lowercased names already taken by an applied service or staged in the
+  // pending change log. Submit is blocked when the typed name is in this set.
+  takenNames: Set<string>;
   onSubmit: (
     draftId: string,
     values: {
@@ -23,8 +26,15 @@ export interface AddServiceFormData extends Record<string, unknown> {
 }
 
 export function AddServiceForm({ data }: NodeProps) {
-  const { draftId, isSubmitting, errorMessage, prefill, onSubmit, onCancel } =
-    data as AddServiceFormData;
+  const {
+    draftId,
+    isSubmitting,
+    errorMessage,
+    prefill,
+    takenNames,
+    onSubmit,
+    onCancel,
+  } = data as AddServiceFormData;
   const [name, setName] = useState(prefill?.name ?? "");
   const [image, setImage] = useState(prefill?.image ?? "");
   const [envVars, setEnvVars] = useState<DraftEnvVar[]>(
@@ -53,6 +63,10 @@ export function AddServiceForm({ data }: NodeProps) {
   function addEnvVar() {
     setEnvVars((prev) => [...prev, { key: "", value: "" }]);
   }
+
+  const trimmedName = name.trim();
+  const collides =
+    trimmedName !== "" && takenNames.has(trimmedName.toLowerCase());
 
   return (
     <div
@@ -95,12 +109,12 @@ export function AddServiceForm({ data }: NodeProps) {
       <form
         onSubmit={(e) => {
           e.preventDefault();
-          if (!name.trim() || !image.trim()) return;
+          if (!trimmedName || !image.trim() || collides) return;
           const trimmedEnvVars = envVars
             .map((ev) => ({ key: ev.key.trim(), value: ev.value }))
             .filter((ev) => ev.key !== "");
           onSubmit(draftId, {
-            name: name.trim(),
+            name: trimmedName,
             image: image.trim(),
             iconUrl: prefill?.iconUrl,
             envVars: trimmedEnvVars.length > 0 ? trimmedEnvVars : undefined,
@@ -130,7 +144,13 @@ export function AddServiceForm({ data }: NodeProps) {
             placeholder="web"
             disabled={isSubmitting}
             autoComplete="off"
+            aria-invalid={collides || undefined}
           />
+          {collides ? (
+            <p className="text-xs text-destructive">
+              A service named &ldquo;{trimmedName}&rdquo; already exists.
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -223,7 +243,7 @@ export function AddServiceForm({ data }: NodeProps) {
           <Button
             type="submit"
             size="sm"
-            disabled={isSubmitting || !name.trim() || !image.trim()}
+            disabled={isSubmitting || !trimmedName || !image.trim() || collides}
           >
             {isSubmitting ? "Creating…" : "Create"}
           </Button>
