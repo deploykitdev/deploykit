@@ -39,6 +39,69 @@ type readinessState struct {
 	lastRestartCount     int
 }
 
+// containerKey uniquely identifies a desired or actual container slot.
+type containerKey struct {
+	serviceID    string
+	deploymentID string
+	replicaIndex int
+}
+
+type desiredContainer struct {
+	project *deploykit.Project
+	service *deploykit.Service
+	dep     *deploykit.Deployment
+	spec    deploykit.ContainerSpec
+	key     containerKey
+}
+
+// cycleSnapshot is the per-cycle state that flows through the reconciler
+// pipeline: load → stageNetworks → stageContainers → stageServiceStatuses →
+// stageInspect. Fast-tick cycles populate only the subset stageInspect reads
+// and run that stage alone.
+//
+// Raw inputs (projects, services, in-flight deployments, networks, running
+// containers, container DB rows) are loaded up front so each stage operates
+// against one consistent view instead of re-issuing the same queries.
+// Per-source load failures are logged at load time and surfaced via the *OK
+// flags so a stage can no-op gracefully when its inputs are missing.
+//
+// Stages may mutate in-memory copies of deployments and services (e.g.
+// dep.Status, svc.Status) — those pointers are shared across the snapshot
+// (deploymentsByID, inFlight, desired, servicesByID) so downstream stages
+// see the freshest values without re-fetching.
+type cycleSnapshot struct {
+	projects                []*deploykit.Project
+	projectsByID            map[string]*deploykit.Project
+	servicesByID            map[string]*deploykit.Service
+	inFlight                []*deploykit.Deployment
+	deploymentsByID         map[string]*deploykit.Deployment
+	networks                []string
+	runningContainers       []deploykit.RunningContainer
+	actualByKey             map[containerKey]deploykit.RunningContainer
+	containerRowsByDockerID map[string][]*deploykit.Container
+
+	// desired is populated by stageContainers (after image pre-flight
+	// removes deployments with bad images) and read by stageServiceStatuses.
+	desired map[containerKey]desiredContainer
+
+	// Per-source load-success flags. A stage returns early if its required
+	// source flag is false — the failure was already logged by the loader.
+	networksOK   bool
+	inFlightOK   bool
+	containersOK bool
+}
+
+func newCycleSnapshot() *cycleSnapshot {
+	return &cycleSnapshot{
+		projectsByID:            map[string]*deploykit.Project{},
+		servicesByID:            map[string]*deploykit.Service{},
+		deploymentsByID:         map[string]*deploykit.Deployment{},
+		actualByKey:             map[containerKey]deploykit.RunningContainer{},
+		containerRowsByDockerID: map[string][]*deploykit.Container{},
+		desired:                 map[containerKey]desiredContainer{},
+	}
+}
+
 // Reconciler periodically reconciles desired state (projects, services,
 // deployments in the DB) with actual state (Docker networks and containers)
 // and corrects any drift.
@@ -55,7 +118,7 @@ type Reconciler struct {
 	bus         deploykit.EventBus
 
 	// readiness is the per-replica observation ledger consulted by
-	// inspectInFlight to decide promotion and crashloop detection.
+	// stageInspect to decide promotion and crashloop detection.
 	readiness map[containerKey]*readinessState
 
 	// now is the wall-clock used by the readiness gate. Tests override it.
@@ -119,6 +182,13 @@ func (r *Reconciler) publish(ctx context.Context, evt deploykit.Event) {
 	r.bus.Publish(ctx, evt)
 }
 
+// hasDeploymentStack reports whether the reconciler was wired with the
+// services/deployments/containers triad. The network-only construction used
+// by the lightweight tests passes nils for these.
+func (r *Reconciler) hasDeploymentStack() bool {
+	return r.services != nil && r.deployments != nil && r.containers != nil
+}
+
 // Run starts the reconciliation loop. It blocks until ctx is cancelled.
 //
 // The loop ticks at fastTickInterval. Most ticks run a cheap inspectInFlight
@@ -175,6 +245,11 @@ func (r *Reconciler) Trigger() {
 
 // ReconcileOnce performs a single reconciliation cycle. It skips if a previous
 // cycle is still running.
+//
+// Pipeline: load full snapshot → stageNetworks → stageContainers →
+// stageServiceStatuses → stageInspect. The deployment-stack stages are
+// skipped when the reconciler was constructed without services/deployments/
+// containers (network-only mode).
 func (r *Reconciler) ReconcileOnce(ctx context.Context) {
 	if !r.mu.TryLock() {
 		r.logger.Debug("skipping reconciliation cycle, previous still running")
@@ -184,55 +259,192 @@ func (r *Reconciler) ReconcileOnce(ctx context.Context) {
 
 	r.logger.Debug("reconciliation cycle started")
 
-	projects, err := r.allProjects(ctx)
+	snap, err := r.loadFullSnapshot(ctx)
 	if err != nil {
-		r.logger.Error("failed to list projects", "err", err)
+		r.logger.Error("failed to load reconcile snapshot", "err", err)
 		return
 	}
 
-	r.reconcileNetworks(ctx, projects)
+	r.stageNetworks(ctx, snap)
 
-	if r.services != nil && r.deployments != nil && r.containers != nil {
-		r.reconcileContainers(ctx, projects)
-		r.doInspectInFlight(ctx)
+	if r.hasDeploymentStack() {
+		r.stageContainers(ctx, snap)
+		r.stageServiceStatuses(ctx, snap)
+		r.stageInspect(ctx, snap)
 	}
 
-	r.logger.Debug("reconciliation cycle complete", "projects", len(projects))
+	r.logger.Debug("reconciliation cycle complete", "projects", len(snap.projects))
 }
 
-// inspectInFlight is the cheap fast-tick pass: it consults Docker's container
-// inspect output for every in-flight deployment's containers and drives the
-// readiness gate (promote when stable, fail when crashlooping). Skips if a
-// reconcile cycle is already in flight.
+// inspectInFlight is the cheap fast-tick pass: it loads only what the
+// readiness gate needs (in-flight deployments, the services they belong to,
+// and the actual running containers) and runs stageInspect against that
+// snapshot. Skips if a full reconcile is already in flight.
 func (r *Reconciler) inspectInFlight(ctx context.Context) {
 	if !r.mu.TryLock() {
 		return
 	}
 	defer r.mu.Unlock()
-	if r.services == nil || r.deployments == nil || r.containers == nil {
+	if !r.hasDeploymentStack() {
 		return
 	}
-	r.doInspectInFlight(ctx)
+
+	snap, err := r.loadInspectSnapshot(ctx)
+	if err != nil {
+		r.logger.Debug("failed to load inspect snapshot", "err", err)
+		return
+	}
+	r.stageInspect(ctx, snap)
 }
 
-func (r *Reconciler) reconcileNetworks(ctx context.Context, projects []*deploykit.Project) {
-	actualNetworks, err := r.provisioner.ListNetworks(ctx)
+// loadFullSnapshot loads every input the full reconcile cycle needs into one
+// consistent snapshot. Returns an error only when a hard precondition (project
+// listing) fails — partial failures of optional sources are logged here and
+// surfaced via the snapshot's *OK flags so individual stages can no-op.
+func (r *Reconciler) loadFullSnapshot(ctx context.Context) (*cycleSnapshot, error) {
+	projects, err := r.allProjects(ctx)
 	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+
+	snap := newCycleSnapshot()
+	snap.projects = projects
+	for _, p := range projects {
+		snap.projectsByID[p.ID] = p
+	}
+
+	if networks, err := r.provisioner.ListNetworks(ctx); err != nil {
 		r.logger.Error("failed to list networks", "err", err)
+	} else {
+		snap.networks = networks
+		snap.networksOK = true
+	}
+
+	if !r.hasDeploymentStack() {
+		return snap, nil
+	}
+
+	for _, p := range projects {
+		services, err := r.allServices(ctx, p.ID)
+		if err != nil {
+			r.logger.Error("failed to list services", "project_id", p.ID, "err", err)
+			continue
+		}
+		for _, svc := range services {
+			snap.servicesByID[svc.ID] = svc
+		}
+	}
+
+	if inFlight, err := r.deployments.ListInFlightDeployments(ctx); err != nil {
+		r.logger.Error("failed to list in-flight deployments", "err", err)
+	} else {
+		snap.inFlight = inFlight
+		snap.inFlightOK = true
+		for _, dep := range inFlight {
+			snap.deploymentsByID[dep.ID] = dep
+		}
+	}
+
+	if running, err := r.provisioner.ListContainers(ctx); err != nil {
+		r.logger.Error("failed to list containers", "err", err)
+	} else {
+		snap.runningContainers = running
+		snap.containersOK = true
+		for _, rc := range running {
+			if rc.ServiceID == "" || rc.DeploymentID == "" {
+				continue
+			}
+			snap.actualByKey[containerKey{
+				serviceID:    rc.ServiceID,
+				deploymentID: rc.DeploymentID,
+				replicaIndex: rc.ReplicaIndex,
+			}] = rc
+		}
+	}
+
+	if rows, err := r.allContainerRows(ctx); err != nil {
+		r.logger.Error("failed to list container rows", "err", err)
+	} else {
+		for _, row := range rows {
+			snap.containerRowsByDockerID[row.DockerContainerID] = append(
+				snap.containerRowsByDockerID[row.DockerContainerID], row)
+		}
+	}
+
+	return snap, nil
+}
+
+// loadInspectSnapshot loads the minimal state the readiness gate needs:
+// in-flight deployments, the services those deployments belong to, and the
+// actual running containers. Skips the project/network/container-row queries
+// the full cycle issues, so each fast tick stays cheap.
+func (r *Reconciler) loadInspectSnapshot(ctx context.Context) (*cycleSnapshot, error) {
+	snap := newCycleSnapshot()
+
+	inFlight, err := r.deployments.ListInFlightDeployments(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list in-flight deployments: %w", err)
+	}
+	snap.inFlight = inFlight
+	snap.inFlightOK = true
+	for _, dep := range inFlight {
+		snap.deploymentsByID[dep.ID] = dep
+	}
+	if len(inFlight) == 0 {
+		// stageInspect will see len(inFlight)==0 and clear the ledger.
+		// No need to query Docker.
+		return snap, nil
+	}
+
+	for _, dep := range inFlight {
+		if _, ok := snap.servicesByID[dep.ServiceID]; ok {
+			continue
+		}
+		svc, err := r.services.GetService(ctx, dep.ServiceID)
+		if err != nil || svc == nil {
+			continue
+		}
+		snap.servicesByID[dep.ServiceID] = svc
+	}
+
+	running, err := r.provisioner.ListContainers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list containers: %w", err)
+	}
+	snap.runningContainers = running
+	snap.containersOK = true
+	for _, rc := range running {
+		if rc.ServiceID == "" || rc.DeploymentID == "" {
+			continue
+		}
+		snap.actualByKey[containerKey{
+			serviceID:    rc.ServiceID,
+			deploymentID: rc.DeploymentID,
+			replicaIndex: rc.ReplicaIndex,
+		}] = rc
+	}
+
+	return snap, nil
+}
+
+// stageNetworks ensures one Docker network exists per project and removes
+// orphaned networks. No-op if the network list failed to load this cycle.
+func (r *Reconciler) stageNetworks(ctx context.Context, snap *cycleSnapshot) {
+	if !snap.networksOK {
 		return
 	}
 
-	actualSet := make(map[string]struct{}, len(actualNetworks))
-	for _, name := range actualNetworks {
+	actualSet := make(map[string]struct{}, len(snap.networks))
+	for _, name := range snap.networks {
 		actualSet[name] = struct{}{}
 	}
 
-	desiredSet := make(map[string]struct{}, len(projects))
-	for _, p := range projects {
+	desiredSet := make(map[string]struct{}, len(snap.projects))
+	for _, p := range snap.projects {
 		desiredSet[deploykit.NetworkName(p)] = struct{}{}
 	}
 
-	for _, p := range projects {
+	for _, p := range snap.projects {
 		name := deploykit.NetworkName(p)
 		if _, exists := actualSet[name]; exists {
 			continue
@@ -243,7 +455,7 @@ func (r *Reconciler) reconcileNetworks(ctx context.Context, projects []*deployki
 		}
 	}
 
-	for _, name := range actualNetworks {
+	for _, name := range snap.networks {
 		if _, desired := desiredSet[name]; desired {
 			continue
 		}
@@ -254,61 +466,27 @@ func (r *Reconciler) reconcileNetworks(ctx context.Context, projects []*deployki
 	}
 }
 
-// containerKey uniquely identifies a desired or actual container slot.
-type containerKey struct {
-	serviceID    string
-	deploymentID string
-	replicaIndex int
-}
-
-type desiredContainer struct {
-	project *deploykit.Project
-	service *deploykit.Service
-	dep     *deploykit.Deployment
-	spec    deploykit.ContainerSpec
-	key     containerKey
-}
-
-func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploykit.Project) {
-	projectsByID := make(map[string]*deploykit.Project, len(projects))
-	for _, p := range projects {
-		projectsByID[p.ID] = p
-	}
-
-	servicesByID := map[string]*deploykit.Service{}
-	for _, p := range projects {
-		services, err := r.allServices(ctx, p.ID)
-		if err != nil {
-			r.logger.Error("failed to list services", "project_id", p.ID, "err", err)
-			continue
-		}
-		for _, svc := range services {
-			servicesByID[svc.ID] = svc
-		}
-	}
-
-	inFlight, err := r.deployments.ListInFlightDeployments(ctx)
-	if err != nil {
-		r.logger.Error("failed to list in-flight deployments", "err", err)
+// stageContainers builds the desired container set from in-flight
+// deployments, pre-flights images, then reconciles teardown and creation
+// against the actual running containers. No-op if either the in-flight list
+// or the running container list failed to load this cycle.
+func (r *Reconciler) stageContainers(ctx context.Context, snap *cycleSnapshot) {
+	if !snap.inFlightOK || !snap.containersOK {
 		return
 	}
 
 	// Build the desired set from every in-flight deployment. Keeping the
 	// previous healthy deployment in the desired set is what protects its
 	// containers from being torn down when a new deployment is being brought up.
-	desired := map[containerKey]desiredContainer{}
-	deploymentsByID := make(map[string]*deploykit.Deployment, len(inFlight))
-	for _, dep := range inFlight {
-		deploymentsByID[dep.ID] = dep
-
-		svc := servicesByID[dep.ServiceID]
+	for _, dep := range snap.inFlight {
+		svc := snap.servicesByID[dep.ServiceID]
 		if svc == nil {
 			continue
 		}
 		if svc.Status == deploykit.ServiceStatusStopped {
 			continue
 		}
-		project := projectsByID[svc.ProjectID]
+		project := snap.projectsByID[svc.ProjectID]
 		if project == nil {
 			continue
 		}
@@ -318,7 +496,7 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 		}
 		for i := 0; i < replicas; i++ {
 			key := containerKey{serviceID: svc.ID, deploymentID: dep.ID, replicaIndex: i}
-			desired[key] = desiredContainer{
+			snap.desired[key] = desiredContainer{
 				project: project,
 				service: svc,
 				dep:     dep,
@@ -334,7 +512,7 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 	// containers stay desired even if the new deployment's image is bad.
 	failedDeployments := map[string]struct{}{}
 	imagesChecked := map[string]struct{}{}
-	for _, dc := range desired {
+	for _, dc := range snap.desired {
 		dep := dc.dep
 		if dep.Status != deploykit.DeploymentStatusPending && dep.Status != deploykit.DeploymentStatusStarting {
 			continue
@@ -342,7 +520,6 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 		if _, ok := failedDeployments[dep.ID]; ok {
 			continue
 		}
-		// Only check each image once per cycle.
 		if _, ok := imagesChecked[dep.Image]; ok {
 			continue
 		}
@@ -352,38 +529,17 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 			failedDeployments[dep.ID] = struct{}{}
 		}
 	}
-	// Drop the image-failed deployments from this cycle's desired set so we
-	// don't try to start them. The previous healthy deployment, if any, is
-	// already in `desired` separately and stays.
-	for key, dc := range desired {
+	for key, dc := range snap.desired {
 		if _, bad := failedDeployments[dc.dep.ID]; bad {
-			delete(desired, key)
+			delete(snap.desired, key)
 		}
-	}
-
-	actual, err := r.provisioner.ListContainers(ctx)
-	if err != nil {
-		r.logger.Error("failed to list containers", "err", err)
-		return
-	}
-
-	actualByKey := make(map[containerKey]deploykit.RunningContainer, len(actual))
-	for _, rc := range actual {
-		if rc.ServiceID == "" || rc.DeploymentID == "" {
-			continue
-		}
-		actualByKey[containerKey{
-			serviceID:    rc.ServiceID,
-			deploymentID: rc.DeploymentID,
-			replicaIndex: rc.ReplicaIndex,
-		}] = rc
 	}
 
 	// Tear down containers no longer desired. With the in-flight model, this
 	// only catches: superseded/failed/cancelled deployments whose containers
 	// are still around, and orphans whose service was deleted.
-	for key, rc := range actualByKey {
-		if _, ok := desired[key]; ok {
+	for key, rc := range snap.actualByKey {
+		if _, ok := snap.desired[key]; ok {
 			continue
 		}
 		if err := r.provisioner.StopAndRemoveContainer(ctx, rc.DockerID); err != nil {
@@ -392,15 +548,18 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 			continue
 		}
 		var projectID string
-		if svc := servicesByID[rc.ServiceID]; svc != nil {
+		if svc := snap.servicesByID[rc.ServiceID]; svc != nil {
 			projectID = svc.ProjectID
 		}
-		r.deleteContainerRow(ctx, rc.DockerID, projectID)
+		r.deleteContainerRow(ctx, snap, rc.DockerID, projectID)
+		// Drop from the snapshot so stageInspect doesn't try to inspect a
+		// container that no longer exists on the runtime.
+		delete(snap.actualByKey, key)
 	}
 
 	// Create missing desired containers.
-	for key, dc := range desired {
-		if _, ok := actualByKey[key]; ok {
+	for key, dc := range snap.desired {
+		if _, ok := snap.actualByKey[key]; ok {
 			continue
 		}
 		// Mark pending → starting on the first attempt to create a container
@@ -442,6 +601,18 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 				"docker_id", dockerID, "service_id", dc.service.ID, "err", err)
 			continue
 		}
+		// Reflect the new container in the snapshot so stageInspect can see
+		// it later in the same cycle (same-cycle promotion for a fresh
+		// deployment depends on this).
+		snap.actualByKey[key] = deploykit.RunningContainer{
+			DockerID:     dockerID,
+			Name:         dc.spec.Name,
+			ProjectID:    dc.project.ID,
+			ServiceID:    dc.service.ID,
+			DeploymentID: dc.dep.ID,
+			ReplicaIndex: key.replicaIndex,
+			State:        "running",
+		}
 		r.publish(ctx, deploykit.Event{
 			Type:      deploykit.EventContainerCreated,
 			ProjectID: dc.service.ProjectID,
@@ -452,114 +623,91 @@ func (r *Reconciler) reconcileContainers(ctx context.Context, projects []*deploy
 			},
 		})
 	}
-
-	r.reconcileServiceStatuses(ctx, servicesByID, desired, actualByKey, deploymentsByID)
 }
 
-// handleDeploymentError bumps attempt_count and, if we've exhausted retries,
-// marks the deployment failed and publishes EventDeploymentFailed. Used for
-// "container never started" failures (image pull, container create) where we
-// have neither an exit code nor logs to capture.
-func (r *Reconciler) handleDeploymentError(ctx context.Context, dep *deploykit.Deployment, reason string) {
-	count, err := r.deployments.IncrementDeploymentAttempt(ctx, dep.ID)
-	if err != nil {
-		r.logger.Error("failed to increment deployment attempt",
-			"deployment_id", dep.ID, "err", err)
+// stageServiceStatuses reconciles service.status against the active
+// deployment's actual container count. If a service has no in-flight active
+// deployment for the current cycle (e.g. all containers were torn down), the
+// status is left unchanged so user-driven `stopped` and CreateDeployment-set
+// `deploying` aren't clobbered.
+//
+// active_deployment_id is re-read per service because the readiness gate from
+// any prior fast tick may have just flipped it.
+func (r *Reconciler) stageServiceStatuses(ctx context.Context, snap *cycleSnapshot) {
+	if !snap.inFlightOK || !snap.containersOK {
 		return
 	}
-	if count < maxDeploymentAttempts {
-		r.logger.Warn("deployment attempt failed; will retry",
-			"deployment_id", dep.ID, "attempt", count, "reason", reason)
-		return
+
+	for svcID, svc := range snap.servicesByID {
+		if svc.Status == deploykit.ServiceStatusStopped {
+			continue
+		}
+
+		fresh, err := r.services.GetService(ctx, svcID)
+		if err != nil || fresh == nil {
+			continue
+		}
+		if fresh.ActiveDeploymentID == nil {
+			continue
+		}
+		activeDepID := *fresh.ActiveDeploymentID
+		dep := snap.deploymentsByID[activeDepID]
+		if dep == nil {
+			continue
+		}
+
+		want, have := 0, 0
+		for key := range snap.desired {
+			if key.serviceID != svcID || key.deploymentID != activeDepID {
+				continue
+			}
+			want++
+			if _, ok := snap.actualByKey[key]; ok {
+				have++
+			}
+		}
+		if have > want {
+			have = want
+		}
+		if want == 0 {
+			continue
+		}
+
+		var target string
+		switch {
+		case have == want:
+			target = deploykit.ServiceStatusRunning
+		case have > 0 && have < want:
+			target = deploykit.ServiceStatusDegraded
+		default:
+			target = deploykit.ServiceStatusDeploying
+		}
+
+		if fresh.Status == target {
+			continue
+		}
+
+		oldStatus := fresh.Status
+		if err := r.services.SetServiceStatus(ctx, svcID, target); err != nil {
+			r.logger.Error("failed to update service status",
+				"service_id", svcID, "status", target, "err", err)
+			continue
+		}
+		r.publish(ctx, deploykit.Event{
+			Type:      deploykit.EventServiceStatusChanged,
+			ProjectID: svc.ProjectID,
+			Payload: deploykit.ServiceStatusChangedPayload{
+				ServiceID: svcID,
+				OldStatus: oldStatus,
+				NewStatus: target,
+			},
+		})
 	}
-	priorSvc, _ := r.services.GetService(ctx, dep.ServiceID)
-	if err := r.deployments.MarkDeploymentFailed(ctx, dep.ID, reason, nil, ""); err != nil {
-		r.logger.Error("failed to mark deployment failed",
-			"deployment_id", dep.ID, "err", err)
-		return
-	}
-	r.publishDeploymentFailed(ctx, dep, reason, count)
-	r.publishServiceStatusChangedIfFlipped(ctx, priorSvc)
 }
 
-// handleDeploymentRuntimeError fails a starting deployment whose container
-// has been observed crashlooping or exited. Captures the exit code and last
-// logTailLines lines of output as failure context. Bypasses the attempt
-// counter — by the time we get here the readiness ledger has already
-// observed badObservationsToFail consecutive bad ticks.
-func (r *Reconciler) handleDeploymentRuntimeError(ctx context.Context, dep *deploykit.Deployment, dockerID string, inspect *deploykit.ContainerInspection, reason string) {
-	logTail, err := r.provisioner.GetContainerLogTail(ctx, dockerID, logTailLines)
-	if err != nil {
-		r.logger.Warn("failed to capture log tail for failed deployment",
-			"deployment_id", dep.ID, "docker_id", dockerID, "err", err)
-		logTail = ""
-	}
-	var exitCode *int
-	if inspect != nil && inspect.ExitCode != nil {
-		ec := *inspect.ExitCode
-		exitCode = &ec
-	}
-	priorSvc, _ := r.services.GetService(ctx, dep.ServiceID)
-	if err := r.deployments.MarkDeploymentFailed(ctx, dep.ID, reason, exitCode, logTail); err != nil {
-		r.logger.Error("failed to mark deployment failed",
-			"deployment_id", dep.ID, "err", err)
-		return
-	}
-	r.publishDeploymentFailed(ctx, dep, reason, dep.AttemptCount)
-	r.publishServiceStatusChangedIfFlipped(ctx, priorSvc)
-}
-
-// publishServiceStatusChangedIfFlipped re-fetches the service after a
-// MarkDeploymentFailed call and publishes EventServiceStatusChanged if the
-// SQL transaction flipped service.status (e.g. deploying → failed when no
-// healthy fallback exists). Without this, the frontend's WebSocket cache
-// invalidation never fires and the user sees a stale "deploying" pill.
-func (r *Reconciler) publishServiceStatusChangedIfFlipped(ctx context.Context, prior *deploykit.Service) {
-	if prior == nil {
-		return
-	}
-	fresh, err := r.services.GetService(ctx, prior.ID)
-	if err != nil || fresh == nil || fresh.Status == prior.Status {
-		return
-	}
-	r.publish(ctx, deploykit.Event{
-		Type:      deploykit.EventServiceStatusChanged,
-		ProjectID: fresh.ProjectID,
-		Payload: deploykit.ServiceStatusChangedPayload{
-			ServiceID: fresh.ID,
-			OldStatus: prior.Status,
-			NewStatus: fresh.Status,
-		},
-	})
-}
-
-// publishDeploymentFailed emits EventDeploymentFailed with the project ID
-// resolved so canvas subscribers can filter. The exit code is persisted on the
-// deployment row, so the bus payload stays compact.
-func (r *Reconciler) publishDeploymentFailed(ctx context.Context, dep *deploykit.Deployment, reason string, attempt int) {
-	r.logger.Error("deployment failed",
-		"deployment_id", dep.ID, "service_id", dep.ServiceID, "reason", reason)
-	var projectID string
-	if svc, _ := r.services.GetService(ctx, dep.ServiceID); svc != nil {
-		projectID = svc.ProjectID
-	}
-	reasonCopy := reason
-	r.publish(ctx, deploykit.Event{
-		Type:      deploykit.EventDeploymentFailed,
-		ProjectID: projectID,
-		Payload: deploykit.DeploymentStatusPayload{
-			DeploymentID:  dep.ID,
-			ServiceID:     dep.ServiceID,
-			Status:        deploykit.DeploymentStatusFailed,
-			FailureReason: &reasonCopy,
-			AttemptCount:  attempt,
-		},
-	})
-}
-
-// doInspectInFlight is the readiness gate. For every replica of every
-// in-flight deployment, it inspects the container and updates an in-memory
-// ledger to decide:
+// stageInspect is the readiness gate. For every replica of every in-flight
+// deployment it inspects the container and updates an in-memory ledger to
+// decide:
 //
 //   - starting + stable for stableWindow + RestartCount unchanged → promote
 //     (atomically supersede prior healthy + flip active_deployment_id).
@@ -570,48 +718,21 @@ func (r *Reconciler) publishDeploymentFailed(ctx context.Context, dep *deploykit
 //     replica survives). Deployment status is left at healthy so the future
 //     proxy can resolve services.active_deployment_id and decide policy.
 //
-// Caller holds r.mu.
-func (r *Reconciler) doInspectInFlight(ctx context.Context) {
-	inFlight, err := r.deployments.ListInFlightDeployments(ctx)
-	if err != nil {
-		r.logger.Error("failed to list in-flight deployments", "err", err)
+// Caller holds r.mu. Readiness semantics are unchanged from the previous
+// doInspectInFlight implementation.
+func (r *Reconciler) stageInspect(ctx context.Context, snap *cycleSnapshot) {
+	if !snap.inFlightOK {
 		return
 	}
-	if len(inFlight) == 0 {
+	if len(snap.inFlight) == 0 {
 		// Nothing in flight; clear the ledger so we don't leak.
 		if len(r.readiness) > 0 {
 			r.readiness = map[containerKey]*readinessState{}
 		}
 		return
 	}
-
-	servicesByID := map[string]*deploykit.Service{}
-	for _, dep := range inFlight {
-		if _, ok := servicesByID[dep.ServiceID]; ok {
-			continue
-		}
-		svc, err := r.services.GetService(ctx, dep.ServiceID)
-		if err != nil || svc == nil {
-			continue
-		}
-		servicesByID[dep.ServiceID] = svc
-	}
-
-	actual, err := r.provisioner.ListContainers(ctx)
-	if err != nil {
-		r.logger.Error("failed to list containers for inspect pass", "err", err)
+	if !snap.containersOK {
 		return
-	}
-	actualByKey := map[containerKey]deploykit.RunningContainer{}
-	for _, rc := range actual {
-		if rc.ServiceID == "" || rc.DeploymentID == "" {
-			continue
-		}
-		actualByKey[containerKey{
-			serviceID:    rc.ServiceID,
-			deploymentID: rc.DeploymentID,
-			replicaIndex: rc.ReplicaIndex,
-		}] = rc
 	}
 
 	now := r.now()
@@ -620,8 +741,8 @@ func (r *Reconciler) doInspectInFlight(ctx context.Context) {
 	// Track which keys are still live this pass so we can GC the ledger.
 	live := map[containerKey]struct{}{}
 
-	for _, dep := range inFlight {
-		svc := servicesByID[dep.ServiceID]
+	for _, dep := range snap.inFlight {
+		svc := snap.servicesByID[dep.ServiceID]
 		if svc == nil {
 			continue
 		}
@@ -642,7 +763,7 @@ func (r *Reconciler) doInspectInFlight(ctx context.Context) {
 
 		for i := 0; i < replicas; i++ {
 			key := containerKey{serviceID: svc.ID, deploymentID: dep.ID, replicaIndex: i}
-			rc, exists := actualByKey[key]
+			rc, exists := snap.actualByKey[key]
 			if !exists {
 				continue
 			}
@@ -746,7 +867,7 @@ func (r *Reconciler) doInspectInFlight(ctx context.Context) {
 				"superseded", priorActive, "baseline_restart_count", maxRestartCount)
 
 			// Promotion implies all replicas are ready — flip the service to
-			// running. Without this the next reconcileServiceStatuses pass
+			// running. Without this the next stageServiceStatuses pass
 			// would tally containers and might briefly report deploying for
 			// the same-cycle case where the container row was just created.
 			if svc.Status != deploykit.ServiceStatusRunning {
@@ -797,6 +918,59 @@ func describeFailure(inspect *deploykit.ContainerInspection) string {
 		return fmt.Sprintf("container is restarting (restart count %d)", inspect.RestartCount)
 	}
 	return "container failed runtime checks"
+}
+
+// handleDeploymentError bumps attempt_count and, if we've exhausted retries,
+// marks the deployment failed and publishes EventDeploymentFailed. Used for
+// "container never started" failures (image pull, container create) where we
+// have neither an exit code nor logs to capture.
+func (r *Reconciler) handleDeploymentError(ctx context.Context, dep *deploykit.Deployment, reason string) {
+	count, err := r.deployments.IncrementDeploymentAttempt(ctx, dep.ID)
+	if err != nil {
+		r.logger.Error("failed to increment deployment attempt",
+			"deployment_id", dep.ID, "err", err)
+		return
+	}
+	if count < maxDeploymentAttempts {
+		r.logger.Warn("deployment attempt failed; will retry",
+			"deployment_id", dep.ID, "attempt", count, "reason", reason)
+		return
+	}
+	priorSvc, _ := r.services.GetService(ctx, dep.ServiceID)
+	if err := r.deployments.MarkDeploymentFailed(ctx, dep.ID, reason, nil, ""); err != nil {
+		r.logger.Error("failed to mark deployment failed",
+			"deployment_id", dep.ID, "err", err)
+		return
+	}
+	r.publishDeploymentFailed(ctx, dep, reason, count)
+	r.publishServiceStatusChangedIfFlipped(ctx, priorSvc)
+}
+
+// handleDeploymentRuntimeError fails a starting deployment whose container
+// has been observed crashlooping or exited. Captures the exit code and last
+// logTailLines lines of output as failure context. Bypasses the attempt
+// counter — by the time we get here the readiness ledger has already
+// observed badObservationsToFail consecutive bad ticks.
+func (r *Reconciler) handleDeploymentRuntimeError(ctx context.Context, dep *deploykit.Deployment, dockerID string, inspect *deploykit.ContainerInspection, reason string) {
+	logTail, err := r.provisioner.GetContainerLogTail(ctx, dockerID, logTailLines)
+	if err != nil {
+		r.logger.Warn("failed to capture log tail for failed deployment",
+			"deployment_id", dep.ID, "docker_id", dockerID, "err", err)
+		logTail = ""
+	}
+	var exitCode *int
+	if inspect != nil && inspect.ExitCode != nil {
+		ec := *inspect.ExitCode
+		exitCode = &ec
+	}
+	priorSvc, _ := r.services.GetService(ctx, dep.ServiceID)
+	if err := r.deployments.MarkDeploymentFailed(ctx, dep.ID, reason, exitCode, logTail); err != nil {
+		r.logger.Error("failed to mark deployment failed",
+			"deployment_id", dep.ID, "err", err)
+		return
+	}
+	r.publishDeploymentFailed(ctx, dep, reason, dep.AttemptCount)
+	r.publishServiceStatusChangedIfFlipped(ctx, priorSvc)
 }
 
 // handleHealthyCrashloop runs when a deployment that was already promoted to
@@ -868,89 +1042,52 @@ func (r *Reconciler) handleHealthyCrashloop(ctx context.Context, svc *deploykit.
 	}
 }
 
-// reconcileServiceStatuses reconciles service.status against the active
-// deployment's actual container count. If a service has no in-flight active
-// deployment for the current cycle (e.g. all containers were torn down), the
-// status is left unchanged so user-driven `stopped` and CreateDeployment-set
-// `deploying` aren't clobbered.
-func (r *Reconciler) reconcileServiceStatuses(
-	ctx context.Context,
-	servicesByID map[string]*deploykit.Service,
-	desired map[containerKey]desiredContainer,
-	actualByKey map[containerKey]deploykit.RunningContainer,
-	deploymentsByID map[string]*deploykit.Deployment,
-) {
-	type tally struct {
-		want, have int
+// publishServiceStatusChangedIfFlipped re-fetches the service after a
+// MarkDeploymentFailed call and publishes EventServiceStatusChanged if the
+// SQL transaction flipped service.status (e.g. deploying → failed when no
+// healthy fallback exists). Without this, the frontend's WebSocket cache
+// invalidation never fires and the user sees a stale "deploying" pill.
+func (r *Reconciler) publishServiceStatusChangedIfFlipped(ctx context.Context, prior *deploykit.Service) {
+	if prior == nil {
+		return
 	}
-	// Service status reflects the *active* deployment only. We resolve that
-	// here from the latest read of services.active_deployment_id (the inspect
-	// pass may have just flipped it, so re-fetch).
-	for svcID, svc := range servicesByID {
-		if svc.Status == deploykit.ServiceStatusStopped {
-			continue
-		}
-
-		fresh, err := r.services.GetService(ctx, svcID)
-		if err != nil || fresh == nil {
-			continue
-		}
-		if fresh.ActiveDeploymentID == nil {
-			continue
-		}
-		activeDepID := *fresh.ActiveDeploymentID
-		dep := deploymentsByID[activeDepID]
-		if dep == nil {
-			continue
-		}
-
-		t := tally{}
-		for key := range desired {
-			if key.serviceID != svcID || key.deploymentID != activeDepID {
-				continue
-			}
-			t.want++
-			if _, ok := actualByKey[key]; ok {
-				t.have++
-			}
-		}
-		if t.have > t.want {
-			t.have = t.want
-		}
-		if t.want == 0 {
-			continue
-		}
-
-		var target string
-		switch {
-		case t.have == t.want:
-			target = deploykit.ServiceStatusRunning
-		case t.have > 0 && t.have < t.want:
-			target = deploykit.ServiceStatusDegraded
-		default:
-			target = deploykit.ServiceStatusDeploying
-		}
-
-		if fresh.Status == target {
-			continue
-		}
-
-		oldStatus := fresh.Status
-		if err := r.services.SetServiceStatus(ctx, svcID, target); err != nil {
-			r.logger.Error("failed to update service status",
-				"service_id", svcID, "status", target, "err", err)
-			continue
-		}
-		r.publish(ctx, deploykit.Event{
-			Type:      deploykit.EventServiceStatusChanged,
-			ProjectID: svc.ProjectID,
-			Payload: deploykit.ServiceStatusChangedPayload{
-				ServiceID: svcID,
-				OldStatus: oldStatus,
-				NewStatus: target,
-			},
-		})
+	fresh, err := r.services.GetService(ctx, prior.ID)
+	if err != nil || fresh == nil || fresh.Status == prior.Status {
+		return
 	}
+	r.publish(ctx, deploykit.Event{
+		Type:      deploykit.EventServiceStatusChanged,
+		ProjectID: fresh.ProjectID,
+		Payload: deploykit.ServiceStatusChangedPayload{
+			ServiceID: fresh.ID,
+			OldStatus: prior.Status,
+			NewStatus: fresh.Status,
+		},
+	})
+}
+
+// publishDeploymentFailed emits EventDeploymentFailed with the project ID
+// resolved so canvas subscribers can filter. The exit code is persisted on the
+// deployment row, so the bus payload stays compact.
+func (r *Reconciler) publishDeploymentFailed(ctx context.Context, dep *deploykit.Deployment, reason string, attempt int) {
+	r.logger.Error("deployment failed",
+		"deployment_id", dep.ID, "service_id", dep.ServiceID, "reason", reason)
+	var projectID string
+	if svc, _ := r.services.GetService(ctx, dep.ServiceID); svc != nil {
+		projectID = svc.ProjectID
+	}
+	reasonCopy := reason
+	r.publish(ctx, deploykit.Event{
+		Type:      deploykit.EventDeploymentFailed,
+		ProjectID: projectID,
+		Payload: deploykit.DeploymentStatusPayload{
+			DeploymentID:  dep.ID,
+			ServiceID:     dep.ServiceID,
+			Status:        deploykit.DeploymentStatusFailed,
+			FailureReason: &reasonCopy,
+			AttemptCount:  attempt,
+		},
+	})
 }
 
 func buildSpec(project *deploykit.Project, svc *deploykit.Service, dep *deploykit.Deployment, replicaIndex int) deploykit.ContainerSpec {
@@ -972,19 +1109,16 @@ func buildSpec(project *deploykit.Project, svc *deploykit.Service, dep *deployki
 }
 
 // deleteContainerRow removes the DB row(s) for a container identified by its
-// runtime ID. Best-effort: errors are logged, not propagated. projectID is
-// used when publishing the resulting ContainerDeleted event; pass "" if the
-// owning project is unknown (event is then skipped).
-func (r *Reconciler) deleteContainerRow(ctx context.Context, dockerID, projectID string) {
-	rows, _, err := r.containers.ListContainers(ctx, deploykit.ContainerFilter{Limit: 100})
-	if err != nil {
-		r.logger.Error("failed to list container rows for cleanup", "err", err)
+// runtime ID, using the snapshot's pre-built index instead of paging through
+// ListContainers per call. Best-effort: errors are logged, not propagated.
+// projectID is used when publishing the resulting ContainerDeleted event;
+// pass "" if the owning project is unknown (event is then skipped).
+func (r *Reconciler) deleteContainerRow(ctx context.Context, snap *cycleSnapshot, dockerID, projectID string) {
+	rows, ok := snap.containerRowsByDockerID[dockerID]
+	if !ok {
 		return
 	}
 	for _, row := range rows {
-		if row.DockerContainerID != dockerID {
-			continue
-		}
 		if err := r.containers.DeleteContainer(ctx, row.ID); err != nil {
 			r.logger.Error("failed to delete container row", "id", row.ID, "err", err)
 			continue
@@ -1000,6 +1134,9 @@ func (r *Reconciler) deleteContainerRow(ctx context.Context, dockerID, projectID
 			})
 		}
 	}
+	// Drop from the index so a duplicate docker ID in the same cycle doesn't
+	// double-delete (shouldn't happen, but cheap insurance).
+	delete(snap.containerRowsByDockerID, dockerID)
 }
 
 func (r *Reconciler) allProjects(ctx context.Context) ([]*deploykit.Project, error) {
@@ -1034,6 +1171,28 @@ func (r *Reconciler) allServices(ctx context.Context, projectID string) ([]*depl
 			ProjectID: &projectID,
 			Limit:     pageSize,
 			Offset:    offset,
+		})
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		offset += len(page)
+		if offset >= total || len(page) == 0 {
+			break
+		}
+	}
+	return all, nil
+}
+
+func (r *Reconciler) allContainerRows(ctx context.Context) ([]*deploykit.Container, error) {
+	var all []*deploykit.Container
+	offset := 0
+	const pageSize = 100
+
+	for {
+		page, total, err := r.containers.ListContainers(ctx, deploykit.ContainerFilter{
+			Limit:  pageSize,
+			Offset: offset,
 		})
 		if err != nil {
 			return nil, err
