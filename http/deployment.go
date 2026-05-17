@@ -45,7 +45,7 @@ func (s *Server) handleCreateDeployment(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if s.Reconciler != nil {
-		s.Reconciler.Trigger()
+		s.Reconciler.TriggerService(serviceID)
 	}
 
 	jsonResponse(w, http.StatusCreated, deployment)

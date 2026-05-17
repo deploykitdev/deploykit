@@ -12,8 +12,12 @@ import (
 )
 
 // Triggerable is implemented by components that support on-demand triggering.
+// Trigger enqueues a full resync (every service plus cross-service sweep);
+// TriggerService targets a single service ID, which is preferred when the
+// caller knows exactly which service changed.
 type Triggerable interface {
 	Trigger()
+	TriggerService(serviceID string)
 }
 
 // Server represents the HTTP server and holds all handler dependencies.
